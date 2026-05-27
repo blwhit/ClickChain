@@ -36,11 +36,13 @@ python clickchain.py --triage-contracts addrs.txt --out-csv triage.csv
 
 ## What it does
 
-- **Static decode** — 5 obfuscation schemes (atob+byte-transform, charcode arrays, hex-escape blobs, etc.) through a sandboxed Python AST evaluator. Never runs attacker JS.
-- **On-chain resolve** — passive read-only `eth_call` to public RPCs (Polygon / BSC / Ethereum). Reads the current C2 URL the contract is serving.
+- **Static decode** — 6 obfuscation schemes (BW v2 IIFE-wrapped XOR, atob+byte-transform, charcode arrays, hex-escape blobs, etc.) through a sandboxed Python AST evaluator. Never runs attacker JS.
+- **On-chain resolve** — passive read-only `eth_call` to public RPCs (Polygon / BSC / Ethereum). Reads the current C2 URL the contract is serving. Handles both `getURL()` (v3 original) and `getDomain()` (Aeternum / BW v2 generation) selectors.
+- **Envelope decrypt** — AES-256-GCM (`gcm1`) and RC4 (`q2`) — full port of the kit's own `decryptApiEnvelope()` function. Decrypts `/api/cfg` and `/api/settings` envelopes to recover the operator's live config (mode, enabled, blockBots, rentalExpired) — all passive, no JS execution.
 - **Contract investigate** — bytecode dispatch scan + full `setURL` rotation history via Etherscan API → `eth_getLogs` → batched block-scan fallback.
 - **Triage** — fast batched read of `admin()` / `owner()` / `getURL()` across many contracts. Answers "one operator, N instances?" vs "N customers, N instances?"
-- **Comprehensive single-IOC** — lure-vs-panel auto-detect, then fetch + decode + resolve + DNS/ports/TLS fingerprint + WordPress + Cloudflare detection + AES clipboard recovery + optional per-OS payload pull.
+- **Comprehensive single-IOC** — lure-vs-panel auto-detect, then fetch + decode + resolve + DNS/ports/TLS fingerprint + WordPress + Cloudflare detection + envelope decrypt + AES clipboard recovery + optional per-OS payload pull.
+- **Payload chain** — 5 download strategies including the May-2026 BW v2 path (`init` → `{token:<hex>}` → `dl?uj=<hex>&rlm=…`).
 - **Batch** — 5,000-domain sweeps at ~200 ms/domain with `ThreadPoolExecutor`, streaming to text / JSON / JSONL / CSV simultaneously.
 
 Eight modes total. See `--help` for the full list.
@@ -144,6 +146,39 @@ full epilog.
 | `--payload-src LURE_HOST` | Required with `--payload-token` — the lure host the token was issued for. |
 | `--payload-mode MODE` | Required with `--payload-token` — typically `cloudflare`. |
 | `--detect-rotation N` | Re-resolve the on-chain C2 N times to detect ongoing rotation cadence. |
+
+---
+
+## Kit families supported
+
+`KNOWN_ACTORS` cross-references contracts + operator wallets so attribution surfaces automatically on triage / resolve / investigate. Currently covered:
+
+| Family | Chain | Sample contract | Notes |
+|---|---|---|---|
+| **ErrTraffic v3** (LenAI) | Polygon | `0x08207B…7eD308` | `getURL()` selector. Original v3 panel kit (lenders.digital / comicstar.lat / krolikrojer.lat / pusanik.shop rotations). |
+| **ErrTraffic v3 BW v2 generation** (LenAI) | Polygon | `0x07b4aB…327F8` | `getDomain()` selector + Aeternum-pattern router + AES-256-GCM `gcm1` envelope. May-2026 deployment (slndcdnclaud.beer). |
+| **Aeternum Loader** (LenAI) | Polygon | `0x4d70C3…64B0` | Native C++ Windows botnet loader. `getDomain()` selector. |
+| **ClearFake** | BSC testnet | 4 contracts | 3-tier validation / Windows-payload / macOS-payload / UUID-dedup. |
+| **UNC5142 / CLEARSHORT** *(hooks ready)* | BSC | — | Will populate as Mandiant publishes contract addresses. |
+| **UNC5342 / DPRK** *(hooks ready)* | Ethereum + BSC | — | Same. |
+
+Selectors auto-resolved against [4byte.directory](https://www.4byte.directory): `getURL()` `0x38bcdc1c`, `setURL(string)` `0x77343408`, `url()` `0x5600f04f`, `admin()` `0xf851a440`, `owner()` `0x8da5cb5b`, `getDomain()` `0xb68d1809`, `kill()` `0x41c0e1b5`, `transferOwner(address)` `0x4fb2e45d`.
+
+---
+
+## ErrTraffic v3 BW v2 (May 2026 generation)
+
+The kit author bumped the JS codebase to "BW v2" (internal marker
+`__BW_SCRIPT_INITIALIZED_V2__`). On-the-wire architecture per LevelBlue
+SpiderLabs 2026, full algorithm reverse-engineered from `/api/css.js`:
+
+- **10-theme `MODE_FILE_MAP`** — browser / font / recaptcha / bsod / silent / cloudflare / cf_update / mac_recaptcha / mac_cloudflare / **recaptcha_win_r** (the new Win+R variant per Atos)
+- **`gcm1` envelope** — AES-256-GCM, scope-keyed: `key = sha256(API_Q2_KEY || utf8(scope + "|gcm1"))`. Scope ∈ {`cfg`, `init`, `dl`, `evt`}. IV (12 B) prepended to ciphertext, GCM tag (128 bit) appended.
+- **`q2` legacy envelope** — RC4 with `key = API_Q2_KEY || nonce(8 B)`.
+- **URL param rename** — `token` → `uj`, `src` → `rlm`, encrypted-payload field is `q`.
+- **Clipboard layer dropped** — BW v2 ships a plaintext `Invoke-WebRequest` launcher (no more AES-CBC clipboard wrap).
+
+ClickChain ships the documented `API_Q2_KEY_HEX` for the May-2026 build (extractable from any panel's `/api/css.js`), so envelope decryption works out of the box.
 
 ---
 
