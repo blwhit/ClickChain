@@ -3177,8 +3177,17 @@ def iter_inputs(path: str, fetch_timeout: int, verify_tls: bool):
         yield ("stdin", "<stdin>", html, {"bytes": len(html)}); return
     if kind in ("url", "domain"):
         target = normalize_target(path) if kind == "domain" else path
-        html, meta = fetch_url_passively(target, timeout=fetch_timeout, verify_tls=verify_tls)
-        yield ("url", target, html, meta); return
+        try:
+            html, meta = fetch_url_passively(target, timeout=fetch_timeout, verify_tls=verify_tls)
+            yield ("url", target, html, meta); return
+        except (urllib.error.HTTPError, urllib.error.URLError, ConnectionError,
+                TimeoutError, ssl.SSLError, OSError) as e:
+            desc = _describe_fetch_exception(e, target, fetch_timeout=fetch_timeout,
+                                             verify_tls=verify_tls)
+            # Yield a sentinel telling the caller to emit a fetch_error report
+            # instead of running analyze_html on empty HTML.
+            yield ("fetch_error", target, "",
+                   {"source_type": "url", "fetch_error_desc": desc}); return
     if kind == "directory":
         for root, _d, files in os.walk(path):
             for f in sorted(files):
@@ -3354,6 +3363,38 @@ def analyze_html(label: str, html: str, source_meta: dict, *, max_depth: int = 8
 def render_text(report: dict, fh=sys.stdout, *, quiet: bool = False):
     p = fh.write
     label = report["input"]["label"]
+
+    # ── Fast-path: fetch-error reports get their own concise panel ───────────
+    # Instead of dumping an empty decode result, show the analyst:
+    #   - what failed (HTTP code / error class)
+    #   - what category (http / dns / tls / timeout / connect)
+    #   - an actionable hint (e.g. "looks like a panel, try --comprehensive")
+    summary = report.get("summary") or {}
+    fe = summary.get("fetch_error")
+    if summary.get("verdict") == "fetch_error" and fe:
+        p("\n" + "=" * 80 + "\n")
+        p(f" [fetch failed]  {label}\n")
+        p("=" * 80 + "\n")
+        msg = fe.get("message") or (report.get("errors") or ["?"])[0]
+        cat = fe.get("category") or "other"
+        st  = fe.get("status")
+        cat_str = f"  [{cat.upper()}{(' '+str(st)) if st else ''}]"
+        p(f"  error:    {msg}{cat_str}\n")
+        pp = fe.get("panel_probe")
+        if pp:
+            p(f"  panel-probe:  role={pp.get('role')}  "
+              f"confidence={pp.get('confidence')}  "
+              f"signals={','.join(pp.get('signals') or [])}\n")
+        if fe.get("hint"):
+            p("\n  hint:\n")
+            # Wrap the hint to 76 cols for readability
+            import textwrap
+            for line in textwrap.wrap(fe["hint"], width=76,
+                                       initial_indent="    ", subsequent_indent="    "):
+                p(line + "\n")
+        p("\n")
+        return
+
     p("\n" + "=" * 80 + "\n"); p(f" INPUT: {label}\n")
     src = report["input"]["source"]
     src_keys_to_show = ("status", "final_url", "content_type", "bytes_received", "fetched_at")
@@ -3751,14 +3792,16 @@ def _process_target(target: str, args, outdir: str | None) -> dict:
         if getattr(args, "payload", False):
             _maybe_fetch_payloads_for_batch(report, args)
         return report
-    except urllib.error.HTTPError as e:
-        return _error_report(target, f"HTTP {e.code} {e.reason}")
-    except urllib.error.URLError as e:
-        return _error_report(target, f"URLError: {e.reason}")
-    except (ConnectionError, TimeoutError, ssl.SSLError, socket_timeout_excs()) as e:
-        return _error_report(target, f"net: {e.__class__.__name__}: {e}")
+    except (urllib.error.HTTPError, urllib.error.URLError, ConnectionError,
+            TimeoutError, ssl.SSLError, OSError) as e:
+        desc = _describe_fetch_exception(e, target, fetch_timeout=args.fetch_timeout,
+                                         verify_tls=not args.no_tls_verify)
+        return _error_report(target, desc["err"], status=desc["status"],
+                             category=desc["category"], hint=desc["hint"],
+                             panel_probe=desc.get("panel_probe"))
     except Exception as e:
-        return _error_report(target, f"unexpected: {e.__class__.__name__}: {e}")
+        return _error_report(target, f"unexpected: {e.__class__.__name__}: {e}",
+                             category="other")
 
 
 def socket_timeout_excs():
@@ -3766,15 +3809,109 @@ def socket_timeout_excs():
     return (socket.timeout, socket.gaierror)
 
 
-def _error_report(target: str, err: str) -> dict:
+def _error_report(target: str, err: str, *, status: int | None = None,
+                  category: str | None = None, hint: str | None = None,
+                  panel_probe: dict | None = None) -> dict:
+    """Build a structured fetch-error report.
+
+    Adds optional fields used by the friendly renderer:
+      status        — HTTP status when we got one (e.g. 404, 403, 503)
+      category      — short bucket: 'http', 'dns', 'tls', 'timeout', 'connect', 'other'
+      hint          — actionable one-liner shown to the user
+      panel_probe   — when we ran classify_input_role to see if the host is an
+                      ErrTraffic panel, the role dict (so we can suggest
+                      --comprehensive when the 404 root hides a live /api/init)
+    """
+    src = {"source_type": "url", "status": status, "bytes_received": 0}
+    summary = {"obfuscated_blocks": 0, "distinct_groups": 0, "schemes_seen": [],
+               "verdict": "fetch_error",
+               "actors_attributed": [], "resolved_next_stage_urls": [],
+               "fetch_error": {"message": err, "category": category,
+                                "status": status, "hint": hint}}
+    if panel_probe:
+        summary["fetch_error"]["panel_probe"] = {
+            "role":       panel_probe.get("role"),
+            "confidence": panel_probe.get("confidence"),
+            "signals":    panel_probe.get("signals", []),
+        }
     return {
         "schema_version": SCHEMA_VERSION, "tool": TOOL_VERSION,
-        "input":   {"label": target, "source": {"source_type": "url", "status": None,
-                                                 "bytes_received": 0}},
+        "input":   {"label": target, "source": src},
         "page":    {}, "groups": [], "errors": [err],
-        "summary": {"obfuscated_blocks": 0, "distinct_groups": 0, "schemes_seen": [],
-                    "verdict": "fetch_error", "actors_attributed": [], "resolved_next_stage_urls": []},
+        "summary": summary,
     }
+
+
+def _describe_fetch_exception(exc: BaseException, target: str,
+                              *, fetch_timeout: int = 10,
+                              verify_tls: bool = True) -> dict:
+    """Classify any fetch failure into a structured kwargs dict for _error_report.
+
+    For HTTP-status failures on the root (404/403/410) we ALSO run a passive
+    panel probe (classify_input_role) — many ErrTraffic panels return 404 on /
+    but a live token JSON on /api/index.php?a=init. If we detect that, the
+    hint suggests `--comprehensive` so the user gets useful output instead of
+    a crash.
+    """
+    err_msg, status, category, hint, panel_probe = "", None, "other", None, None
+    if isinstance(exc, urllib.error.HTTPError):
+        status   = exc.code
+        err_msg  = f"HTTP {exc.code} {exc.reason}"
+        category = "http"
+        # Probe for a hidden panel behind a 404/403/410 root — common with
+        # ErrTraffic/Aeternum, which gate everything behind /api/index.php
+        if status in (400, 401, 403, 404, 410, 451, 500, 502, 503):
+            try:
+                panel_probe = classify_input_role(target, timeout=min(fetch_timeout, 8),
+                                                  verify_tls=verify_tls)
+            except Exception:
+                panel_probe = None
+            if panel_probe and panel_probe.get("role") == "panel":
+                hint = ("Host returned " + str(status) + " on `/` but the panel-probe "
+                        "shape (`/api/index.php?a=init` returns a token JSON) — this "
+                        "looks like an ErrTraffic/Aeternum panel. Re-run with "
+                        "`--comprehensive [--payload]` to drive the panel-direct flow.")
+            else:
+                hint = ("Target reachable but root returned " + str(status) +
+                        ". The lure may be at a non-root path, or the host may have "
+                        "been taken down. Try `--comprehensive` (auto-probes /api/init) "
+                        "or pass the explicit lure URL with path.")
+    elif isinstance(exc, urllib.error.URLError):
+        reason = getattr(exc, "reason", exc)
+        err_msg = f"URLError: {reason}"
+        # Subclassify the reason
+        if isinstance(reason, ssl.SSLError) or "ssl" in str(reason).lower() or "certificate" in str(reason).lower():
+            category = "tls"
+            hint = "TLS/certificate failure. Try `--no-tls-verify` (corp MITM / stale clock / self-signed)."
+        elif isinstance(reason, TimeoutError) or "timed out" in str(reason).lower():
+            category = "timeout"
+            hint = f"Connection timed out after {fetch_timeout}s. Try `--fetch-timeout 60` or the host may be down."
+        elif "name or service not known" in str(reason).lower() or "getaddrinfo" in str(reason).lower():
+            category = "dns"
+            hint = "DNS resolution failed. Confirm the domain still exists; many ClickFix lures are short-lived."
+        elif "refused" in str(reason).lower():
+            category = "connect"
+            hint = "Connection refused — host is online but not serving on this port. Try the other scheme (http vs https)."
+        else:
+            category = "connect"
+            hint = "Network-level failure reaching the host. Confirm the machine has Internet access."
+    elif isinstance(exc, TimeoutError) or exc.__class__.__name__ == "timeout":
+        err_msg = f"timeout after {fetch_timeout}s"
+        category = "timeout"
+        hint = f"Connection timed out. Try `--fetch-timeout 60` or the host may be down."
+    elif isinstance(exc, ssl.SSLError):
+        err_msg = f"SSLError: {exc}"
+        category = "tls"
+        hint = "TLS handshake failed. Try `--no-tls-verify`."
+    elif isinstance(exc, ConnectionError):
+        err_msg = f"ConnectionError: {exc}"
+        category = "connect"
+        hint = "Connection error. Host may be offline, blocking the UA, or geo-gating."
+    else:
+        err_msg = f"{exc.__class__.__name__}: {exc}"
+        category = "other"
+    return {"err": err_msg, "status": status, "category": category,
+            "hint": hint, "panel_probe": panel_probe}
 
 
 def _fmt_dur(seconds: float) -> str:
@@ -5046,11 +5183,21 @@ def main():
             for source_type, label, html, src_meta in iter_inputs(args.input, args.fetch_timeout,
                                                                     not args.no_tls_verify):
                 src_meta = dict(src_meta or {}); src_meta.setdefault("source_type", source_type)
-                report = analyze_html(label, html, src_meta,
-                                      max_depth=args.max_depth, outdir=args.out,
-                                      resolve_chain=args.resolve,
-                                      rpc_override=args.rpc_url,
-                                      rpc_timeout=args.rpc_timeout)
+                if source_type == "fetch_error":
+                    # Mode 2 fetch failed — build a clean fetch_error report
+                    # instead of running analyze_html on empty HTML.
+                    desc = src_meta.get("fetch_error_desc") or {}
+                    report = _error_report(label, desc.get("err", "fetch failed"),
+                                           status=desc.get("status"),
+                                           category=desc.get("category"),
+                                           hint=desc.get("hint"),
+                                           panel_probe=desc.get("panel_probe"))
+                else:
+                    report = analyze_html(label, html, src_meta,
+                                          max_depth=args.max_depth, outdir=args.out,
+                                          resolve_chain=args.resolve,
+                                          rpc_override=args.rpc_url,
+                                          rpc_timeout=args.rpc_timeout)
                 if args.format == "json":      render_json(report, jsonl=False)
                 elif args.format == "jsonl":   render_json(report, jsonl=True)
                 else:                          render_text(report, quiet=args.quiet)
