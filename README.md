@@ -1,9 +1,25 @@
-# ClickChain
+# ClickChain  (v5.4)
 
 > Investigate ClickFix infections that hide their C2 in smart contracts.
-> Lure → contract → panel → payload → operator wallet, in one command.
+> Lure → contract → panel → payload → operator wallet → operator's full inventory → funding source, in one command.
 
-ClickChain is a single-file Python CLI for hunting **EtherHiding**-backed ClickFix kits (ErrTraffic, ClearFake, Aeternum, and adjacent campaigns). It decodes obfuscated lure JS without executing it, resolves the on-chain C2 the lure points to, and reads the operator's wallet straight off the chain.
+ClickChain is a single-file Python CLI for hunting **EtherHiding**-backed ClickFix kits (ErrTraffic, ClearFake, Aeternum, and adjacent campaigns). It decodes obfuscated lure JS without executing it, resolves the on-chain C2 the lure points to, reads the operator's wallet straight off the chain, walks down every contract that wallet ever deployed, and walks back the wallet's funding source to identify exchange terminus vs operator bootstrapping.
+
+## What's new in 5.4 (Session 28, 2026-05-28)
+
+- **`--enumerate-deployer WALLET`** — list every contract a wallet has ever deployed on the target chain. Etherscan v2 txlist paginated, filtered for contract-creation (`to == "" AND contractAddress != ""`). Returns chronological inventory with `creation_tx` / `block_time` / `gas_used`. Pair with `--to-triage-file FILE` to chain directly into `--triage-contracts`. Validated by walking LenAI's primary wallet → 184 contracts (vs KrakenLabs's public 32).
+- **`--trace-funding WALLET --funding-hops N`** — walks back N hops of incoming MATIC. At each hop fetches `txlist + txlistinternal`, finds first inbound `value > 0`, tags source against `KNOWN_EXCHANGES` (24+ Binance/OKX/KuCoin/Bybit/MEXC/Gate.io/Coinbase/HTX/Bitget + Polygon bridges + ChangeNOW/SimpleSwap/FixedFloat) + `KNOWN_ACTORS`. Terminus types: `known_exchange` / `known_actor` / `depth_exhausted` / `no_funding` / `no_api_key` / `unsupported_chain`. Validated: "Customer A" and "Customer E" funding-traces both terminate at LenAI primary (= they're LenAI alts, not customers).
+- **`TRIAGE_SELECTORS` extended to 6 entries:** added `getDomain()` (`0xb68d1809`, BW v2 / Aeternum read selector) + `getServer()` (`0x3bc5de30`, jobloom-cluster read selector). Closes the S27 gap where BW v2 contracts returned `current_url=None`. CSV writers + columns updated correspondingly.
+- **`KNOWN_EXCHANGES`** dict added (~25 entries, sourced from Polygonscan public labels). New helper `lookup_exchange()` parallels `lookup_actor()`.
+- **`KNOWN_ACTORS`** updated: `0xb0425bf2…` retagged "LenAI alt-wallet A" (was "Customer A"); `0xf1940ddb…` retagged "LenAI alt-wallet E". Both carry the funding-tx citation that proves the relabel.
+
+## What's new in 5.3 (Session 27, 2026-05-28)
+
+- **Lure-mode envelope_recovery wiring.** Every comprehensive lure run now decrypts the resolved panel's `/api/cfg` + `/api/settings` envelopes using the per-panel `API_Q2_KEY_HEX` that `extract_loader_intel` just harvested. Cached by `panel_host` (one probe per panel even when 50 lures resolve to the same panel).
+- **KNOWN_ACTORS expanded.** 21 new BW v2 panel-router contracts + 5 new operator wallets, all admin()-verified via S27 triage. The kit ecosystem now has 7 distinct operators (was 2 in S25). Operator `0xb0425bf2…` scaled from 4 → 12 panels; LenAI (`0xcaf2c54e…`) scaled from 2 → 8.
+- **Thread-safe `--log-file` Tee.** Was silently garbling output at `--workers 32`. Lock-serialized; `writelines` properly batches multi-line writes.
+- **ErrTraffic v3 flagship rotation captured live:** `0x08207b…` is currently pointing at `megamegalodon.click` (previous: pusanik.shop → lenders.digital → krolikrojer.lat → comicstar.lat).
+- **First .com BW v2 panel observed** (`macerapindasi.com`) — defenders should watch for kit-pattern detection on non-burner-TLD domains too.
 
 ---
 
