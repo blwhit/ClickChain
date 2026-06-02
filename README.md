@@ -1,9 +1,28 @@
-# ClickChain  (v5.4)
+# ClickChain  (v6.2)
 
 > Investigate ClickFix infections that hide their C2 in smart contracts.
-> Lure → contract → panel → payload → operator wallet → operator's full inventory → funding source, in one command.
+> Lure → contract → panel → payload → operator config → operator wallet → full inventory → funding source, in one command.
 
-ClickChain is a single-file Python CLI for hunting **EtherHiding**-backed ClickFix kits (ErrTraffic, ClearFake, Aeternum, and adjacent campaigns). It decodes obfuscated lure JS without executing it, resolves the on-chain C2 the lure points to, reads the operator's wallet straight off the chain, walks down every contract that wallet ever deployed, and walks back the wallet's funding source to identify exchange terminus vs operator bootstrapping.
+ClickChain is a **standalone, single-file** Python CLI for hunting **EtherHiding**-backed ClickFix kits (ErrTraffic, ClearFake, Aeternum, jobloom, and adjacent campaigns). It decodes obfuscated lure JS without executing it, resolves the on-chain C2 the lure points to, reads the operator's wallet straight off the chain, walks down every contract that wallet ever deployed, and walks back the wallet's funding source to identify exchange terminus vs operator bootstrapping.
+
+The defensible/immutable threat data — **known actors, wallets, contracts, operators (`KNOWN_ACTORS`) and known panel hosts (`KNOWN_PANELS`)** — is **baked into the script**, so attribution works anywhere with no external files. Ephemeral data (the full IOC sweep list, the rolling lure memory) lives in optional external files.
+
+## What's new in 6.2 (Session 39, 2026-05-29)
+
+- **Standalone known-panel attribution.** The chain-verified panel host set (179, incl. historical/rotated) is now baked in as `KNOWN_PANELS`, alongside `KNOWN_ACTORS`. The `role=panel` rule + `known_panel_inventory` signal work out of the box on any host — no `PANELS_COMPREHENSIVE.json` to sync (this was the silent cause of the FlareVM 0-fire). `_load_panels_kb` = baked-in floor + **optional** external merge (`--panels-kb PATH`, or a `PANELS_COMPREHENSIVE.json`/`panels.txt` in the run dir, adds newer panels / richer metadata on top). Startup prints the KB in effect. Dropped `example*.com` placeholder hosts.
+- **Lure memory clarified as optional.** The panel→lure map is in-memory and rolling (learns as it scans, no file needed); `--panel-lure-memory FILE` only adds cross-run persistence.
+
+## What's new in 6.1 (Session 39, 2026-05-29)
+
+- **Panel-vs-lure classification fix.** `_cf_role` now tags any host in the chain-verified panel KB (`analysis/PANELS_COMPREHENSIVE.json`) as `role=panel` even when its `/api/init` 404s today — a known panel that's down is still a panel. (Audited against the 12,948-record S37 sweep: 58 of 111 known panels were mis-roled `unknown_role`; replaying the fix recovers all 58.) `_load_panels_kb` now warns loudly when the KB file isn't found instead of degrading silently.
+- **FULL operator config in every output.** `probe_panel_envelopes` emits `config_full` — the complete merged decrypted `/api/cfg` + `/api/settings` config — printed in full to stdout (every key, untruncated) and serialized to a new `bw_v2_config_json` CSV column (was: 11-key allowlist in stdout, 5 fields in CSV; full config buried in nested JSON).
+- **Operator admin/install-panel probe.** New `probe_admin_panel()` passively GETs `/admin/login.php`, `/install.php`, etc. on every identified panel (panel-mode + lure→resolved-panel), severity-tiered (`exposed_unauth` / `install_wizard` / `exists_protected`), per-host cached, rendered + 3 CSV columns (`admin_panel_open` / `admin_surface_found` / `admin_findings`). Flags: `--no-admin-probe` (disable), `--probe-admin` (force on any IOC). Basis: Censys "Inside a GlitchFix Attack Panel".
+- **Expanded, parallel port scan.** `fingerprint_server` probes 16 ports (was 3) — adds operator-panel `:3000/:1337` + service ports `22/21/3306/6379/9200/5432/3389/27017/8080/8000/8888` — via a TCP-connect thread pool (≤3 s/port). Bare dotted IPs kept.
+- **Comprehensive panel inventory.** `panels.txt` (project root, **179** panel hosts) + regenerated `analysis/PANELS_COMPREHENSIVE.{json,csv,md}` (111→179); `analysis/sweep_2026-05-28/sweep_merged.txt` rebuilt to **13,331** hosts (panels ∪ lures ∪ resolved C2 ∪ curated, deduped). Rebuild + re-bake `KNOWN_PANELS` with `scripts/_s39_consolidate_panels.py`.
+
+## What's new in 6.0 (Session 35)
+
+- **Intelligent 3-artifact payload recovery.** Unified clipboard decoder (BW v2 string-XOR-hex / byte-array-XOR / AES-CBC / `-EncodedCommand` / plaintext) recovers raw clipboard PS + decoded PS + binary. Handles the newest ErrTraffic generation that ships the victim clipboard PowerShell **inside the `/api/init` token** (rolling-XOR-hex), plus the served-script chase (a `a=dl` text payload is decoded and the real binary fetched one level deep). Known panels are routed to the panel-direct flow regardless of today's init result.
 
 ## What's new in 5.4 (Session 28, 2026-05-28)
 
@@ -54,10 +73,10 @@ python clickchain.py --triage-contracts addrs.txt --out-csv triage.csv
 
 - **Static decode** — 6 obfuscation schemes (BW v2 IIFE-wrapped XOR, atob+byte-transform, charcode arrays, hex-escape blobs, etc.) through a sandboxed Python AST evaluator. Never runs attacker JS.
 - **On-chain resolve** — passive read-only `eth_call` to public RPCs (Polygon / BSC / Ethereum). Reads the current C2 URL the contract is serving. Handles both `getURL()` (v3 original) and `getDomain()` (Aeternum / BW v2 generation) selectors.
-- **Envelope decrypt** — AES-256-GCM (`gcm1`) and RC4 (`q2`) — full port of the kit's own `decryptApiEnvelope()` function. Decrypts `/api/cfg` and `/api/settings` envelopes to recover the operator's live config (mode, enabled, blockBots, rentalExpired) — all passive, no JS execution.
+- **Envelope decrypt** — AES-256-GCM (`gcm1`) and RC4 (`q2`) — full port of the kit's own `decryptApiEnvelope()` function. Decrypts `/api/cfg` and `/api/settings` envelopes to recover the operator's live config. The **complete** decrypted config (`config_full`) is surfaced in every output — stdout (every key, untruncated), the `bw_v2_config_json` CSV column, and JSON — not just a hand-picked subset. All passive, no JS execution. (Coverage is key-bound: a panel's config only decrypts when its per-host `API_Q2_KEY_HEX` has been harvested from a loader.)
 - **Contract investigate** — bytecode dispatch scan + full `setURL` rotation history via Etherscan API → `eth_getLogs` → batched block-scan fallback.
 - **Triage** — fast batched read of `admin()` / `owner()` / `getURL()` across many contracts. Answers "one operator, N instances?" vs "N customers, N instances?"
-- **Comprehensive single-IOC** — lure-vs-panel auto-detect, then fetch + decode + resolve + DNS/ports/TLS fingerprint + WordPress + Cloudflare detection + envelope decrypt + AES clipboard recovery + optional per-OS payload pull.
+- **Comprehensive single-IOC** — lure-vs-panel auto-detect (incl. chain-verified panel-KB lookup), then fetch + decode + resolve + DNS/16-port/TLS fingerprint + WordPress + Cloudflare detection + envelope decrypt (full config) + AES clipboard recovery + admin/install-panel probe + optional per-OS payload pull.
 - **Payload chain** — 5 download strategies including the May-2026 BW v2 path (`init` → `{token:<hex>}` → `dl?uj=<hex>&rlm=…`).
 - **Batch** — 5,000-domain sweeps at ~200 ms/domain with `ThreadPoolExecutor`, streaming to text / JSON / JSONL / CSV simultaneously.
 
