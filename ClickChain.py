@@ -307,7 +307,7 @@ import signal
 from typing import Any, Iterable
 
 TOOL_NAME       = "ClickChain"
-TOOL_VERSION    = "clickchain/6.9"   # S47: OPEN-LOGIN-PAGE class + composer build fingerprint. probe_admin_panel now (a) detects a GENUINE login PAGE via a real <input type=password> (not just keyword markers) and emits severity 'open_login' with login_kind — LIVE-validated across the fleet into two classes: v3_landing_analytics (flagship v3-original /admin/ "Landing Analytics" key-gated dashboard login, 9 panels — amalgama.lat/megamegalodon.click/anakondabob.club/bulletpop.cyou/chubrik.sbs/corppop.shop/marinaradom.cfd/sandman.bond; api.php?action=summary returns 403 {"error":"unauthorized"} w/o the operator key, so the LOGIN PAGE is open but access is gated) and authorization_captcha (LenAI kit-author DEV/reference instance rpc-cloud.beer /login.php — server-side username+password+CAPTCHA, the only fleet host with composer name "id0/project"/GeoLite2 desc; all hardened production BW v2 panels expose NO HTML login, only /api/* + /admin/partials/*). (b) reads detectors on the FULL body (was the 400-byte head — every late-page password form was missed). (c) captures /composer.json backend build fingerprint (backend_build: "maxmind-bare" = hardened BW v2 fleet vs "id0/project" = kit-author dev build) as info_disclosure. (d) tightened is_install (path-driven OR >=2 markers + explicit install/setup word) so composer's "GeoLite2 database" desc no longer mislabels install_wizard. (e) /composer.LOCK content-hash = cryptographic build-pipeline fingerprint (backend_lock_hash): the ENTIRE production fleet shares one hash 0199ba7b… (single maxmind-db/reader pkg) = one kit source across all operators, while the LenAI dev instance rpc-cloud.beer = 09146794… (full geoip2/geoip2 v3.3.0 API) = dev-vs-prod build split. (f) composer.lock/installed.json `time` fields → backend_build_date = build-date FLOOR (prod fleet 2025-11-21 vs LenAI dev box rpc-cloud.beer 2026-01-13 = the dev box runs a NEWER v-next build). (g) robots.txt non-trivial Disallow capture (robots_disallow — can leak hidden admin dirs). New out flags any_open_login/open_login_kinds/backend_build/backend_lock_hash/backend_build_date/robots_disallow + 5 CSV cols (admin_open_login/_kinds/admin_backend_build/_lock_hash/_build_date). +/composer.json /composer.lock /vendor/composer/installed.json /robots.txt in admin_paths. +7 test assertions; 5/5 suites green; FlareVM synced. Flagship operator dashboard api.php action surface catalogued (read-only): summary/chart/downloads/export/visitors (all key-gated, 403 w/o key). rpc-cloud.beer (DEV/id0) profiled via ZAP+nuclei: PHP/nginx, PHPSESSID (no HttpOnly), TLS1.1+weak-cipher allowed, robots Disallow:/, /uploads/ dir, POST-only /api, /vendor/composer/installed.json readable. + S44: FLEET-WIDE backend-origin clustering — cluster_backend_origins() groups every swept panel by its leaked aaPanel site-dir (/www/wwwroot/idNN/) and SELF-LEARNS each site-dir->origin-IP from any DIRECT-resolving (non-CF) member, then de-anonymizes the CF-fronted members sharing that site-dir THROUGH Cloudflare (live-verified: nsservclod.beer direct->178.16.52.101 leaks id30, sane-cdn-js->id63 — the box vhost-routes each real hostname to its own site-dir, only falling back to its default id75 for junk/bare-IP requests, so the leak is genuine vhost-aware ground truth not a catch-all). Evidence-tiered: confirmed_origin (direct anchor in-sweep OR ground-truthed KNOWN default) / colocated_only (shared site-dir, IP unproven) / ambiguous (distinct IPs share a site-dir = per-box-counter collision, explicitly NOT a de-anon). Prints a [backend de-anon] block in the batch summary + stats['backend_clusters']; +test (7 assertions). No regressions (5/5 suites green). + v6.7: backend-instance fingerprint + CF-ORIGIN DE-ANON — probe_admin_panel now extracts the aaPanel site-dir (/www/wwwroot/idNN/) from the PHP-error leak (backend_site_dir) and, when it matches a ground-truthed default-vhost (KNOWN_BACKEND_ORIGINS: id75→178.16.52.101 OMEGATECH, id4→158.94.209.253), emits origin_deanon pinning the TRUE origin THROUGH Cloudflare (the leak comes from the origin, not the CF edge — cert-SAN/Shodan-on-edge can't do this). Verified: per-origin default site-dir is distinct (junk-Host probe); negative control shows id75 is the catch-all default. +2 CSV cols (admin_backend_site_dir, cf_origin_deanon). All suites green. + v6.6: (1) fingerprint_server CF-edge port-FP fix — open web ports on a Cloudflare edge IP are now flagged edge_provider=cloudflare/origin_visible=False/ports_note (was: 28/28 CF panels reported 8080/8443 as if exposed origin services); non-CF IPs flagged origin_visible=True (the S42 origin-visible-cluster signal, e.g. 158.94.209.253 SSH/22). (2) probe_admin_panel status_histogram/misses_404/unreachable_probes so "0 admin found" is unambiguous (404-everywhere vs host-down). (3) NEW admin severity 'info_disclosure' — /admin/partials/*.php emit a PHP "Fatal error: undefined errtraffic_csrf_token()" whose `errtraffic` token used to mis-match _ADMIN_LOGIN_MARKERS → mis-labeled exposed_unauth/HIGH on 74/163 panels; now reclassified MEDIUM info-disclosure (excluded from any_unauth_200), leaked server path captured in leaked_paths (e.g. /www/wwwroot/id75/ = aaPanel/BT-Panel). Reconciles S40 "no admin door" (0 usable exposed) with the real path-leak finding. No verdict/CSV changes; all 5 suites green. + S41-audit3: broad/deep admin sweep (admin_paths 7→39 from CTI/leaked-v2/DB-tables/co-located-DB-UIs, PARALLELIZED probe_admin_panel — 39 paths in ~2s); NEW colocated_hosts synthesis (cert-SAN + Shodan, CF-edge-flagged, cross-refs known-panel KB → auto-surfaces the S40 shared-backend pivot e.g. cdn-2faclov.sbs↔anlytic-js-cloud.beer); endpoint catalog deduped (canonical admin entry points only — probe_admin_panel owns the exhaustive admin sweep, no double-probe). + v6.4:
+TOOL_VERSION    = "clickchain/7.0"   # v7.0 (S54): ANTI-BOT GATE handling — detect_antibot_gate() recognizes hosting-WAF interstitials (Imunify360 "WebShield"; title "One moment, please..." + wsidchk form). A gated lure no longer scores nothing_recovered: verdict=gated_antibot, the /z<hex> next-stage is surfaced as an IOC, the wsidchk challenge answer is computed with a pure-Python JS-subset evaluator (_js_eval_atomic/_extract_jsfuck_numbers — NO node/browser, validated byte-exact vs the page JS), best-effort SOLVED in-session (solve_antibot_gate, cookie jar) and on greylist/JA3 failure FALLS BACK to urlscan.io (urlscan_recover_gated) to pull the real browser-rendered loader's contract+panel+RPC pool, then resolves them on-chain (_quick_resolve_contract getURL/getDomain). Live-validated on chrisgursky.com → recovered LenAI contract 0xB6bC9e1D… getDomain()→ethercdnns.beer. + generation-agnostic tx-history setter decode (BW v2 setDomain 0xb249cd2d now yields the rotation domain, was "fn: ?"). + _PANEL_TLD_RE right-boundary FP fix. _test_antibot_gate.py (16 assertions); 6/6 suites green. # S47: OPEN-LOGIN-PAGE class + composer build fingerprint. probe_admin_panel now (a) detects a GENUINE login PAGE via a real <input type=password> (not just keyword markers) and emits severity 'open_login' with login_kind — LIVE-validated across the fleet into two classes: v3_landing_analytics (flagship v3-original /admin/ "Landing Analytics" key-gated dashboard login, 9 panels — amalgama.lat/megamegalodon.click/anakondabob.club/bulletpop.cyou/chubrik.sbs/corppop.shop/marinaradom.cfd/sandman.bond; api.php?action=summary returns 403 {"error":"unauthorized"} w/o the operator key, so the LOGIN PAGE is open but access is gated) and authorization_captcha (LenAI kit-author DEV/reference instance rpc-cloud.beer /login.php — server-side username+password+CAPTCHA, the only fleet host with composer name "id0/project"/GeoLite2 desc; all hardened production BW v2 panels expose NO HTML login, only /api/* + /admin/partials/*). (b) reads detectors on the FULL body (was the 400-byte head — every late-page password form was missed). (c) captures /composer.json backend build fingerprint (backend_build: "maxmind-bare" = hardened BW v2 fleet vs "id0/project" = kit-author dev build) as info_disclosure. (d) tightened is_install (path-driven OR >=2 markers + explicit install/setup word) so composer's "GeoLite2 database" desc no longer mislabels install_wizard. (e) /composer.LOCK content-hash = cryptographic build-pipeline fingerprint (backend_lock_hash): the ENTIRE production fleet shares one hash 0199ba7b… (single maxmind-db/reader pkg) = one kit source across all operators, while the LenAI dev instance rpc-cloud.beer = 09146794… (full geoip2/geoip2 v3.3.0 API) = dev-vs-prod build split. (f) composer.lock/installed.json `time` fields → backend_build_date = build-date FLOOR (prod fleet 2025-11-21 vs LenAI dev box rpc-cloud.beer 2026-01-13 = the dev box runs a NEWER v-next build). (g) robots.txt non-trivial Disallow capture (robots_disallow — can leak hidden admin dirs). New out flags any_open_login/open_login_kinds/backend_build/backend_lock_hash/backend_build_date/robots_disallow + 5 CSV cols (admin_open_login/_kinds/admin_backend_build/_lock_hash/_build_date). +/composer.json /composer.lock /vendor/composer/installed.json /robots.txt in admin_paths. +7 test assertions; 5/5 suites green; FlareVM synced. Flagship operator dashboard api.php action surface catalogued (read-only): summary/chart/downloads/export/visitors (all key-gated, 403 w/o key). rpc-cloud.beer (DEV/id0) profiled via ZAP+nuclei: PHP/nginx, PHPSESSID (no HttpOnly), TLS1.1+weak-cipher allowed, robots Disallow:/, /uploads/ dir, POST-only /api, /vendor/composer/installed.json readable. + S44: FLEET-WIDE backend-origin clustering — cluster_backend_origins() groups every swept panel by its leaked aaPanel site-dir (/www/wwwroot/idNN/) and SELF-LEARNS each site-dir->origin-IP from any DIRECT-resolving (non-CF) member, then de-anonymizes the CF-fronted members sharing that site-dir THROUGH Cloudflare (live-verified: nsservclod.beer direct->178.16.52.101 leaks id30, sane-cdn-js->id63 — the box vhost-routes each real hostname to its own site-dir, only falling back to its default id75 for junk/bare-IP requests, so the leak is genuine vhost-aware ground truth not a catch-all). Evidence-tiered: confirmed_origin (direct anchor in-sweep OR ground-truthed KNOWN default) / colocated_only (shared site-dir, IP unproven) / ambiguous (distinct IPs share a site-dir = per-box-counter collision, explicitly NOT a de-anon). Prints a [backend de-anon] block in the batch summary + stats['backend_clusters']; +test (7 assertions). No regressions (5/5 suites green). + v6.7: backend-instance fingerprint + CF-ORIGIN DE-ANON — probe_admin_panel now extracts the aaPanel site-dir (/www/wwwroot/idNN/) from the PHP-error leak (backend_site_dir) and, when it matches a ground-truthed default-vhost (KNOWN_BACKEND_ORIGINS: id75→178.16.52.101 OMEGATECH, id4→158.94.209.253), emits origin_deanon pinning the TRUE origin THROUGH Cloudflare (the leak comes from the origin, not the CF edge — cert-SAN/Shodan-on-edge can't do this). Verified: per-origin default site-dir is distinct (junk-Host probe); negative control shows id75 is the catch-all default. +2 CSV cols (admin_backend_site_dir, cf_origin_deanon). All suites green. + v6.6: (1) fingerprint_server CF-edge port-FP fix — open web ports on a Cloudflare edge IP are now flagged edge_provider=cloudflare/origin_visible=False/ports_note (was: 28/28 CF panels reported 8080/8443 as if exposed origin services); non-CF IPs flagged origin_visible=True (the S42 origin-visible-cluster signal, e.g. 158.94.209.253 SSH/22). (2) probe_admin_panel status_histogram/misses_404/unreachable_probes so "0 admin found" is unambiguous (404-everywhere vs host-down). (3) NEW admin severity 'info_disclosure' — /admin/partials/*.php emit a PHP "Fatal error: undefined errtraffic_csrf_token()" whose `errtraffic` token used to mis-match _ADMIN_LOGIN_MARKERS → mis-labeled exposed_unauth/HIGH on 74/163 panels; now reclassified MEDIUM info-disclosure (excluded from any_unauth_200), leaked server path captured in leaked_paths (e.g. /www/wwwroot/id75/ = aaPanel/BT-Panel). Reconciles S40 "no admin door" (0 usable exposed) with the real path-leak finding. No verdict/CSV changes; all 5 suites green. + S41-audit3: broad/deep admin sweep (admin_paths 7→39 from CTI/leaked-v2/DB-tables/co-located-DB-UIs, PARALLELIZED probe_admin_panel — 39 paths in ~2s); NEW colocated_hosts synthesis (cert-SAN + Shodan, CF-edge-flagged, cross-refs known-panel KB → auto-surfaces the S40 shared-backend pivot e.g. cdn-2faclov.sbs↔anlytic-js-cloud.beer); endpoint catalog deduped (canonical admin entry points only — probe_admin_panel owns the exhaustive admin sweep, no double-probe). + v6.4:
 # v6.4 (S41-audit2): kit-absent early-abort (rotated-API panels skip OS 2-4 → faster tail); honest payload_status (recovered/dl_gated_403/kit_absent_404/host_unreachable) + tokens_captured surfaced in summary+CSV; lure→resolved-panel endpoint-probe parity; hardened _deobfuscate_loader_js (let/const + kit XOR-key fallback). Audit conclusion: BW v2 no-payload = INTERMITTENT server-side dl-403 gate + corpus aging (not a bug; code recovers when panel serves). + v6.3:
 # v6.3 (S40): clean Ctrl+C (cooperative interrupt + hard-exit, no atexit thread-join hang); per-target reachability gate + --target-budget (dead panels 8min→0.1s, no 170/179 crawl); per-target scan-duration timing; key-from-JS envelope decrypt (pull API_Q2_KEY_HEX from /api/css.js → 2→136 decrypts); concise kit/operator/contract attribution (drops redundant "Known-panel KB entry for <host>"); NEW probe_known_endpoints (full kit-endpoint surface map). + v6.2 STANDALONE baked-in KNOWN_PANELS
 
@@ -3951,6 +3951,18 @@ def _fetch_tx_history_etherscan(addr: str, chain: str, max_history: int,
             meta = lookup_selector(sel) or {}
             decoded_param = (_decode_param_string_from_input(t.get("input", ""))
                              if meta.get("param") == "string" else None)
+            fn = meta.get("signature", "?")
+            # Generation-agnostic setter decode: for an UNKNOWN selector (e.g.
+            # the BW v2 `setDomain` 0xb249cd2d on contract 0xB6bC9e1D…), still
+            # try to decode an ABI string arg from the input. If it looks like a
+            # host/URL, surface it as the rotation value instead of "fn: ?" — so
+            # rotation history works for every kit generation, not just setURL.
+            if decoded_param is None and not meta:
+                cand = _decode_param_string_from_input(t.get("input", ""))
+                if cand and 3 < len(cand) < 256 and "." in cand and \
+                   re.fullmatch(r"[A-Za-z0-9._:/%?=&~\-]+", cand):
+                    decoded_param = cand
+                    fn = f"setter(string)?[{sel}]"
             history.append({
                 "block_number": int(t["blockNumber"]),
                 "block_time":   datetime.datetime.fromtimestamp(int(t["timeStamp"]),
@@ -3960,7 +3972,7 @@ def _fetch_tx_history_etherscan(addr: str, chain: str, max_history: int,
                 "from":         t["from"],
                 "from_attribution": (lookup_actor(t["from"]) or {}).get("name"),
                 "selector":     sel,
-                "function":     meta.get("signature", "?"),
+                "function":     fn,
                 "decoded_param": decoded_param,
                 "decoded_param_defanged": _defang(decoded_param) if decoded_param else None,
             })
@@ -4949,6 +4961,10 @@ def probe_wordpress_backdoor(origin: str, *, timeout: int = 6,
             "cf_intercepted_count": cf_intercept_count}
 
 
+_SHODAN_CACHE: dict[str, "dict | None"] = {}   # ip -> slim dict | None (404 miss)
+_SHODAN_LOCK = threading.Lock()
+_SHODAN_BACKOFF_UNTIL = 0.0   # monotonic deadline; while now < this, skip Shodan (got 429)
+
 def shodan_host_enrich(ip: str, *, api_key: str | None = None,
                        timeout: float = 10.0) -> dict | None:
     """OPTIONAL free enrichment via Shodan's /shodan/host/{ip} endpoint.
@@ -4963,6 +4979,18 @@ def shodan_host_enrich(ip: str, *, api_key: str | None = None,
     `/shodan/host/{ip}` is more lenient but we use the same non-browser
     UA for consistency."""
     if not api_key or not ip: return None
+    import time as _t
+    global _SHODAN_BACKOFF_UNTIL
+    # Per-IP dedup + global 429 backoff. A comprehensive sweep fingerprints
+    # thousands of UNIQUE lure hosts; without an IP-level cache that hammered
+    # Shodan (S52: 1,945 × HTTP 429). Cache hits AND 404-misses by IP; on 429,
+    # back off globally for 60 s so concurrent workers stop piling on.
+    with _SHODAN_LOCK:
+        if ip in _SHODAN_CACHE:
+            c = _SHODAN_CACHE[ip]
+            return ({**c, "from_cache": True} if isinstance(c, dict) else c)
+        if _t.monotonic() < _SHODAN_BACKOFF_UNTIL:
+            return {"error": "shodan_backoff_skip (rate-limited)", "ip": ip}
     try:
         req = urllib.request.Request(
             f"https://api.shodan.io/shodan/host/{ip}?key={api_key}&minify=false",
@@ -4971,12 +4999,17 @@ def shodan_host_enrich(ip: str, *, api_key: str | None = None,
         with urllib.request.urlopen(req, timeout=timeout) as r:
             j = json.loads(r.read())
     except urllib.error.HTTPError as e:
-        if e.code == 404: return None     # IP simply not indexed
+        if e.code == 404:
+            with _SHODAN_LOCK: _SHODAN_CACHE[ip] = None   # not indexed — cache the miss
+            return None
+        if e.code == 429:
+            with _SHODAN_LOCK: _SHODAN_BACKOFF_UNTIL = _t.monotonic() + 60.0
+            return {"error": "HTTP 429 (rate-limited — backing off 60s)", "ip": ip}
         return {"error": f"HTTP {e.code}", "ip": ip}
     except Exception as e:
         return {"error": f"{type(e).__name__}: {str(e)[:100]}", "ip": ip}
     services = j.get("data") or []
-    return {
+    _res = {
         "ip":          j.get("ip_str") or ip,
         "hostnames":   j.get("hostnames") or [],
         "domains":     j.get("domains")   or [],
@@ -4993,6 +5026,8 @@ def shodan_host_enrich(ip: str, *, api_key: str | None = None,
         "vulns":       sorted(j.get("vulns") or []),   # CVEs if any
         "service_products": sorted({s.get("product","") for s in services if s.get("product")}),
     }
+    with _SHODAN_LOCK: _SHODAN_CACHE[ip] = _res
+    return _res
 
 
 _ADMIN_LOGIN_MARKERS = (
@@ -5028,6 +5063,33 @@ def _admin_login_kind(title: str, body_lc: str) -> str:
     if "wordpress" in t or "wp-login" in body_lc:
         return "wordpress"
     return "generic"
+
+
+# Guards that stop the keyword-marker `exposed_unauth` branch from over-claiming
+# (S52 BUG-A: a soft-200 'Redirecting...' catch-all flagged 8 admin paths HIGH;
+#  BUG-B: a robots.txt containing the word "password" flagged exposed_unauth).
+_DATA_FILE_SUFFIXES = (".json", ".lock", ".txt", ".xml", ".js", ".css", ".map", ".ico")
+def _is_data_file_path(path: str) -> bool:
+    p = (path or "").lower().rstrip("/")
+    return p.endswith(_DATA_FILE_SUFFIXES)
+def _is_html_surface(body_lc: str) -> bool:
+    return ("<html" in body_lc) or ("<!doctype html" in body_lc) or ("<body" in body_lc)
+def _is_soft_200(body: str) -> bool:
+    """True when a 200 is really a redirect stub / catch-all rather than a
+    rendered admin surface: tiny body, a bare 'Redirecting...' page, or a
+    meta-refresh / JS redirect with no real <form>."""
+    if not body:
+        return True
+    b = body.strip(); bl = b.lower()
+    if len(b) < 512:
+        return True
+    if "redirecting" in bl and len(b) < 4096:
+        return True
+    if re.search(r'http-equiv=["\']refresh', bl) and "<form" not in bl:
+        return True
+    if "window.location" in bl and "<form" not in bl and len(b) < 4096:
+        return True
+    return False
 
 
 def probe_admin_panel(origin: str, *, timeout: int = 6, verify_tls: bool = True,
@@ -5168,9 +5230,12 @@ def probe_admin_panel(origin: str, *, timeout: int = 6, verify_tls: bool = True,
             severity, note = "open_login", ("operator login PAGE reachable (real password "
                 f"form, kind={login_kind}) — access still gated by creds/key; confirms an "
                 "admin exists + leaks its UI/structure (HIGH-but-gated)")
-        elif status == 200 and markers:
+        elif (status == 200 and markers and not _is_data_file_path(path)
+              and _is_html_surface(body_lc) and not _is_soft_200(body)
+              and len(markers) >= 2):
             severity, note = "exposed_unauth", ("admin/login surface served WITHOUT "
-                "auth (200) — operator panel exposed (HIGH)")
+                "auth (200, HTML, >=2 admin markers, not a redirect stub) — operator "
+                "panel exposed (HIGH)")
         elif status == 200 and robots_disallow:
             severity, note = "info_disclosure", ("robots.txt discloses non-trivial Disallow paths "
                 "(possible hidden admin dirs): " + ", ".join(robots_disallow[:8]))
@@ -6360,6 +6425,12 @@ _BINARY_MAGICS = {
     "archive_7z", "archive_rar", "gzip", "apk_android", "jar_java",
     "dex_android", "zip",
 }
+# Magics that are NOT a real downloadable payload — a 200 that returned one of
+# these is a redirect/markup/text blob mis-saved as a "payload" (S52: faa64e5f
+# was a 1.78 MB magic=text blob falsely marked payload_status=recovered). We do
+# NOT downgrade `binary_unknown` or script magics here (those can be genuine
+# payloads); only clearly non-executable text/markup types.
+_NONBINARY_PAYLOAD_MAGICS = {"text", "html", "xml", "json_maybe", "empty"}
 
 def _detect_file_magic(data: bytes) -> str:
     """Return a coarse file-type label from magic bytes.
@@ -8059,7 +8130,10 @@ def download_all_os_payloads(panel_url: str, *, timeout: int = 15,
 def _classify_payload_status(results: dict, successful: dict) -> tuple:
     """Explain the payload-recovery outcome across all OSes. Returns
     (status, human_note). One of:
-      recovered          — at least one OS yielded a binary
+      recovered          — at least one OS yielded a real binary
+      recovered_nonbinary— download(s) succeeded but returned non-binary content
+                           (text/html/xml/json) — a blob mis-saved as a payload,
+                           NOT a confirmed binary (S52 faa64e5f guard)
       dl_gated_403       — token minted but every dl returned 403 (kit serves the
                            binary only to a verified victim session — anti-analysis
                            / CIS-geofence; the TOKEN remains a trackable IOC)
@@ -8067,7 +8141,17 @@ def _classify_payload_status(results: dict, successful: dict) -> tuple:
       host_unreachable   — connection-level failures only (host down)
       no_binary          — none of the above cleanly (mixed / unknown gating)."""
     if successful:
-        return "recovered", f"binary recovered for {sorted(successful.keys())}"
+        # Gate "recovered" on real binary content: a download whose magic is a
+        # plain text/markup type (not a PE/ELF/archive/script/unknown-binary) is
+        # a redirect/HTML/text blob mis-saved as a payload, not a confirmed binary.
+        real = {os_: r for os_, r in successful.items()
+                if (r.get("magic") or "") not in _NONBINARY_PAYLOAD_MAGICS}
+        if real:
+            return "recovered", f"binary recovered for {sorted(real.keys())}"
+        served = sorted({(r.get("magic") or "?") for r in successful.values()})
+        return ("recovered_nonbinary",
+                f"download succeeded but returned non-binary content {served} — likely a "
+                f"redirect/HTML/text blob mis-saved as a payload, NOT a confirmed binary")
     all_statuses, dl_403, dl_any, conn_errs, minted = [], 0, 0, 0, 0
     for r in results.values():
         if r.get("token") or r.get("init_token"):
@@ -8648,6 +8732,12 @@ def _investigate_ioc_comprehensive_impl(url: str, args, progress_fh=None,
                                 max_depth=args.max_depth, outdir=args.out,
                                 resolve_chain=True, rpc_override=args.rpc_url,
                                 rpc_timeout=args.rpc_timeout)
+    # Anti-bot gate handling: if the lure sits behind a WAF interstitial
+    # (Imunify360 WebShield), try to solve it / recover the contract via
+    # urlscan so the on-chain panel is still resolved.
+    if (base_report.get("summary") or {}).get("verdict") == "gated_antibot":
+        if progress_fh: print(f"[comprehensive] anti-bot gate at {target} — attempting recovery", file=progress_fh)
+        _apply_gate_recovery(base_report, target, args)
     report["lure_page"] = base_report
     # 3) Server fingerprint of the lure host
     from urllib.parse import urlparse
@@ -9229,6 +9319,415 @@ def _group_verdict(classifications: list[dict]) -> str:
     return "decoded" if classifications else "no_decode"
 
 
+# ============================================================================
+# Anti-bot interstitial gate handling (Imunify360 "WebShield" + generic gates)
+# ----------------------------------------------------------------------------
+# A growing share of compromised lures sit behind a hosting-WAF interstitial
+# (Imunify360 WebShield, title "One moment, please...") that serves a JS
+# challenge instead of the page. A static fetch only sees the challenge, so the
+# real ErrTraffic loader (and its on-chain contract) is never reached and the
+# scan historically scored "nothing_recovered". We now:
+#   1. DETECT the gate and surface its next-stage path as an IOC (never silent).
+#   2. best-effort SOLVE it -- the WebShield `wsidchk` answer is the sum of two
+#      JSFuck integer expressions, computable with a tiny pure-Python JS-subset
+#      evaluator (NO node / NO browser; validated byte-exact vs the page's JS).
+#   3. fall back to a urlscan.io lookup that pulls the real (browser-rendered)
+#      loader's contract+panel when the solve is greylisted/fingerprint-blocked.
+# Research: from a datacenter IP, WebShield stacks JS-exec + a `wschkid` trusted
+# cookie + JA3 TLS fingerprinting + IP greylisting, so the HTTP solve is
+# best-effort only; the urlscan fallback is the reliable lightweight path.
+# ============================================================================
+
+def _get_dotenv_key(names: "tuple[str, ...]") -> "str | None":
+    """Look up an API key by candidate names in os.environ, then .env files
+    (cwd, script dir, parent dir). Case-insensitive on .env keys. Quotes
+    stripped. Returns the first value found, or None."""
+    for n in names:
+        v = os.environ.get(n)
+        if v:
+            return v.strip().strip('"').strip("'")
+    lwanted = {n.lower() for n in names}
+    _here = os.path.dirname(os.path.abspath(__file__))
+    for env_path in (os.path.join(os.getcwd(), ".env"),
+                     os.path.join(_here, ".env"),
+                     os.path.join(_here, "..", ".env")):
+        if not os.path.isfile(env_path):
+            continue
+        try:
+            for ln in open(env_path, encoding="utf-8", errors="replace"):
+                ln = ln.strip()
+                if not ln or ln.startswith("#") or "=" not in ln:
+                    continue
+                k, _, v = ln.partition("=")
+                if k.strip().lower() in lwanted:
+                    return v.strip().strip('"').strip("'")
+        except Exception:
+            pass
+    return None
+
+
+# -- pure-Python JS-subset evaluator for the {+ ! ( ) [ ]} alphabet ----------
+_JS_EMPTY = ("[]",)  # sentinel for the JS empty array []
+
+def _js_to_num(v):
+    if v is _JS_EMPTY: return 0
+    if isinstance(v, bool): return 1 if v else 0
+    if isinstance(v, (int, float)): return v
+    if isinstance(v, str):
+        t = v.strip()
+        if not t: return 0
+        try: return int(t)
+        except ValueError:
+            try: return float(t)
+            except ValueError: return float("nan")
+    return float("nan")
+
+def _js_to_str(v):
+    if v is _JS_EMPTY: return ""
+    if isinstance(v, bool): return "true" if v else "false"
+    if isinstance(v, float) and v.is_integer(): return str(int(v))
+    return str(v)
+
+def _js_to_bool(v):
+    if v is _JS_EMPTY: return True          # arrays are truthy in JS
+    if isinstance(v, bool): return v
+    if isinstance(v, (int, float)): return v != 0
+    if isinstance(v, str): return len(v) > 0
+    return False
+
+def _js_eval_atomic(expr: str):
+    """Evaluate a JSFuck-style expression (only `+ ! ( ) [ ]`) using JavaScript
+    coercion rules. Used to compute the WebShield wsidchk answer offline."""
+    toks = [c for c in expr if not c.isspace()]
+    for c in toks:
+        if c not in "+!()[]":
+            raise ValueError(f"non-JSFuck char {c!r}")
+    pos = 0
+    def peek():
+        return toks[pos] if pos < len(toks) else None
+    def atom():
+        nonlocal pos
+        t = peek()
+        if t == "[":
+            pos += 1
+            if peek() == "]":
+                pos += 1; return _JS_EMPTY
+            raise ValueError("'[' without ']'")
+        if t == "(":
+            pos += 1; v = expr_()
+            if peek() == ")": pos += 1
+            return v
+        raise ValueError(f"unexpected token {t!r}")
+    def unary():
+        nonlocal pos
+        t = peek()
+        if t == "+": pos += 1; return _js_to_num(unary())
+        if t == "!": pos += 1; return (not _js_to_bool(unary()))
+        return atom()
+    def add(a, b):
+        if a is _JS_EMPTY or b is _JS_EMPTY or isinstance(a, str) or isinstance(b, str):
+            return _js_to_str(a) + _js_to_str(b)
+        return _js_to_num(a) + _js_to_num(b)
+    def expr_():
+        nonlocal pos
+        v = unary()
+        while peek() == "+":
+            pos += 1; v = add(v, unary())
+        return v
+    return expr_()
+
+def _extract_jsfuck_numbers(js: str, limit: int = 8) -> "list[tuple[str, int]]":
+    """Find balanced `+((...))` JSFuck integer expressions and evaluate them.
+    Returns [(expr, int_value), ...] in source order."""
+    out: list[tuple[str, int]] = []
+    i = 0
+    while len(out) < limit:
+        k = js.find("+((", i)
+        if k < 0:
+            break
+        depth = 0; j = k + 1; ok = True
+        while j < len(js):
+            c = js[j]
+            if c == "(": depth += 1
+            elif c == ")":
+                depth -= 1
+                if depth == 0: break
+            elif c not in "+![]() ":
+                ok = False; break
+            j += 1
+        if ok and depth == 0:
+            seg = js[k:j + 1]
+            try:
+                val = _js_eval_atomic(seg)
+                if isinstance(val, (int, float)) and float(val).is_integer():
+                    out.append((seg, int(val)))
+            except Exception:
+                pass
+            i = j + 1
+        else:
+            i = k + 3
+    return out
+
+
+_GATE_TITLE_MARKERS = (
+    "one moment, please", "please wait while", "checking your browser",
+    "your request is being verified", "request is being validated",
+    "verifying you are human", "just a moment", "attention required",
+)
+_GATE_BODY_MARKERS = ("wsidchk", "wschkid", "__webshield", "imunify")
+
+def detect_antibot_gate(html: str, headers: "dict | None" = None) -> "dict | None":
+    """Detect a hosting-WAF / anti-bot interstitial (Imunify360 WebShield and
+    the generic JS-challenge / meta-refresh class). Pure (no network).
+    Returns {kind, title, next_stage_path, wsidchk, ts, pdata, confidence} or
+    None when the page is not a gate. Conservative to avoid false positives on
+    real pages."""
+    if not html:
+        return None
+    low = html.lower()
+    title_m = re.search(r"<title[^>]*>([^<]*)</title>", html, re.I)
+    title = (title_m.group(1).strip() if title_m else "")
+    tlow = title.lower()
+    has_title = any(m in tlow for m in _GATE_TITLE_MARKERS)
+    is_webshield = ("wsidchk" in low) or ("wschkid" in low)
+    # WebShield is high-confidence on the wsidchk/wschkid marker alone. The
+    # generic class needs a gate title AND a redirect/refresh/challenge cue, so
+    # we don't mislabel ordinary "please wait" copy on a real page.
+    if not is_webshield:
+        has_refresh = bool(re.search(r'http-equiv=["\']refresh', low)) or "window.location" in low
+        has_challenge = ("challenge" in low) or ("verif" in low) or ("captcha" in low and "turnstile" not in low)
+        if not (has_title and (has_refresh or has_challenge)):
+            return None
+        # Real ErrTraffic content / loaders are larger and carry their own
+        # markers; a gate interstitial is small. Guard against big real pages.
+        if len(html) > 60_000:
+            return None
+    info: dict[str, Any] = {
+        "kind": "imunify360_webshield" if is_webshield else "generic_js_interstitial",
+        "title": title[:120],
+        "confidence": "high" if is_webshield else "medium",
+    }
+    # next-stage action (form action / L='...' / fetch path), e.g. /z<hex>
+    act = None
+    m = re.search(r"""['"](/z[0-9a-fA-F]{16,})['"]""", html)
+    if m:
+        act = m.group(1)
+    if not act:
+        m = re.search(r"""\baction\s*[:=]\s*['"]([^'"]+)['"]""", html, re.I)
+        if m:
+            act = m.group(1)
+    info["next_stage_path"] = act
+    # wsidchk answer = sum of the JSFuck integer expressions (validated exact)
+    nums = _extract_jsfuck_numbers(html)
+    if len(nums) >= 2:
+        info["wsidchk"] = nums[0][1] + nums[1][1]
+    elif len(nums) == 1:
+        info["wsidchk"] = nums[0][1]
+    m = re.search(r"['\"](\d{10})['\"]", html)
+    info["ts"] = m.group(1) if m else None
+    m = re.search(r"['\"](https?%3[Aa]%2[Ff]%2[Ff][^'\"]+)['\"]", html)
+    info["pdata"] = m.group(1) if m else None
+    return info
+
+def solve_antibot_gate(url: str, html: "str | None" = None, *, timeout: int = 20,
+                       verify_tls: bool = False) -> "tuple[str | None, dict]":
+    """Best-effort, dependency-free WebShield solve. Fetches the challenge (if
+    `html` not supplied), computes the wsidchk answer, submits it in-session
+    (cookie jar via _build_session_opener), and re-fetches the origin. Returns
+    (real_html_or_None, info). Returns None when still gated (the common case
+    on fingerprint-hardened / greylisted configs) — the caller then uses the
+    urlscan fallback. Never raises."""
+    info: dict[str, Any] = {"attempted": True, "passed": False}
+    try:
+        from urllib.parse import urlparse, quote
+        opener = _build_session_opener(verify_tls=verify_tls)
+        base_headers = {
+            "User-Agent": _BROWSER_UA,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+        }
+        if html is None:
+            req = urllib.request.Request(url, headers=base_headers)
+            with opener.open(req, timeout=timeout) as r:
+                html = r.read(200_000).decode("utf-8", "replace")
+        gate = detect_antibot_gate(html)
+        if not gate:
+            return html, {"attempted": False, "passed": True, "note": "not gated"}
+        info["gate"] = gate
+        wsid = gate.get("wsidchk")
+        act = gate.get("next_stage_path")
+        if wsid is None or not act:
+            info["note"] = "could not compute wsidchk/action"
+            return None, info
+        pu = urlparse(url)
+        origin = f"{pu.scheme}://{pu.netloc}"
+        pdata = gate.get("pdata") or quote(origin, safe="")
+        ts = gate.get("ts") or ""
+        action_url = act if act.startswith("http") else origin + act
+        sep = "&" if "?" in action_url else "?"
+        solve_url = f"{action_url}{sep}wsidchk={wsid}&pdata={pdata}"
+        if ts:
+            solve_url += f"&ts={ts}"
+        req = urllib.request.Request(solve_url, headers={**base_headers, "Referer": origin + "/"})
+        try:
+            with opener.open(req, timeout=timeout) as r:
+                r.read(50_000)
+        except Exception:
+            pass
+        # re-fetch origin with the (hopefully) trusted cookie now in the jar
+        req = urllib.request.Request(url, headers={**base_headers, "Referer": origin + "/"})
+        with opener.open(req, timeout=timeout) as r:
+            real = r.read(400_000).decode("utf-8", "replace")
+        if detect_antibot_gate(real) is None and real.strip():
+            info["passed"] = True
+            return real, info
+        info["note"] = "still gated after solve (greylist/fingerprint)"
+        return None, info
+    except Exception as e:
+        info["error"] = f"{type(e).__name__}: {e}"
+        return None, info
+
+_PANEL_TLD_RE = (r"[a-z0-9][a-z0-9.-]*\.(?:beer|sbs|cfd|shop|bond|cyou|lat|click|"
+                 r"xyz|site|club|lol|mom|asia|store|digital|monster|in)(?![a-z0-9-])")
+
+def urlscan_recover_gated(domain: str, *, timeout: int = 25) -> "dict | None":
+    """Reliable fallback for WAF-gated lures: pull an existing urlscan.io scan
+    (their browser already passed the gate) and mine the EtherHiding contract,
+    resolved panel host(s), and RPC pool from the scan. Returns
+    {source, scan_uuid, scan_time, contracts[], panels[], rpc_pool[]} or None.
+    Uses urlscan key from env/.env. Never raises."""
+    key = _get_dotenv_key(("urlscan_io_apiKey", "urlscan_io_apikey",
+                           "URLSCAN_API_KEY", "URLSCAN_IO_APIKEY", "urlscan_io_apikey2"))
+    if not key:
+        return None
+    import json as _json
+    from urllib.parse import quote, urlparse
+    base = (domain or "").lower().replace("https://", "").replace("http://", "").strip("/").split("/")[0]
+    if not base:
+        return None
+    hdrs = {"API-Key": key, "User-Agent": _BROWSER_UA}
+    try:
+        q = quote(f'page.domain:"{base}" OR task.url:"{base}"')
+        req = urllib.request.Request(
+            f"https://urlscan.io/api/v1/search/?q={q}&size=5", headers=hdrs)
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            res = _json.load(r)
+    except Exception:
+        return None
+    results = res.get("results") or []
+    if not results:
+        return None
+    uuid = results[0].get("_id")
+    scan_time = (results[0].get("task") or {}).get("time")
+    try:
+        req = urllib.request.Request(
+            f"https://urlscan.io/api/v1/result/{uuid}/", headers=hdrs)
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            raw = r.read().decode("utf-8", "replace")
+    except Exception:
+        return None
+    contracts = sorted({m.lower() for m in re.findall(r"0x[0-9a-fA-F]{40}", raw)})
+    panels = sorted({h for h in re.findall(_PANEL_TLD_RE, raw, re.I)
+                     if h.lower() != base})
+    rpcs = sorted({h for h in re.findall(
+        r"(?:polygon|rpc|eth|bsc)[a-z0-9.-]*\.(?:build|org|com|io|app|network|dev)", raw, re.I)})
+    if not (contracts or panels):
+        return None
+    return {"source": "urlscan", "scan_uuid": uuid, "scan_time": scan_time,
+            "contracts": contracts, "panels": panels[:25], "rpc_pool": rpcs[:25]}
+
+
+def _quick_resolve_contract(addr: str, *, rpc_timeout: int = 15) -> "dict | None":
+    """Read a contract's current C2 via getURL()/getDomain() using the
+    Etherscan-v2 proxy eth_call on Polygon (chainid=137). Decodes the ABI
+    string return. Returns {contract, selector, decoded_url} or None. Used to
+    turn a urlscan-recovered contract address into a live panel. Never raises."""
+    key = _get_dotenv_key(("POLYGONSCAN_API_KEY", "ETHERSCAN_API_KEY"))
+    if not key:
+        return None
+    import json as _json
+    for sel, name in (("0x38bcdc1c", "getURL()"), ("0xb68d1809", "getDomain()")):
+        try:
+            u = (f"https://api.etherscan.io/v2/api?chainid=137&module=proxy"
+                 f"&action=eth_call&to={addr}&data={sel}&tag=latest&apikey={key}")
+            with urllib.request.urlopen(
+                    urllib.request.Request(u, headers={"User-Agent": _BROWSER_UA}),
+                    timeout=rpc_timeout) as r:
+                res = (_json.load(r).get("result") or "")
+            h = res[2:]
+            if len(h) < 128:
+                continue
+            off = int(h[0:64], 16) * 2
+            ln = int(h[off:off + 64], 16) * 2
+            s = bytes.fromhex(h[off + 64:off + 64 + ln]).decode("utf-8", "replace").strip()
+            if s and ("." in s or s.startswith("http")):
+                return {"contract": addr, "selector": name, "decoded_url": _defang(s)}
+        except Exception:
+            continue
+    return None
+
+
+def _apply_gate_recovery(page_report: dict, target: str, args) -> dict:
+    """When analyze_html flagged an anti-bot gate, try to get behind it:
+      (1) best-effort pure-Python WebShield solve -> re-analyze the real page;
+      (2) urlscan.io fallback -> recover contract(s)+panel(s) and resolve them
+          on-chain to a live C2.
+    Mutates page_report['summary'] in place (adds 'gate_recovery'); promotes a
+    successful solve's groups/verdict. Safe — never raises."""
+    summ = page_report.get("summary") or {}
+    if summ.get("verdict") != "gated_antibot":
+        return page_report
+    from urllib.parse import urlparse
+    url = target if str(target).startswith("http") else "https://" + str(target)
+    host = urlparse(url).hostname or str(target)
+    rec: dict[str, Any] = {"gate": (page_report.get("page") or {}).get("antibot_gate")}
+    # (1) best-effort solve
+    try:
+        real_html, info = solve_antibot_gate(
+            url, timeout=getattr(args, "fetch_timeout", 20),
+            verify_tls=getattr(args, "strict_tls", False))
+        rec["solve"] = info
+        if real_html:
+            sub = analyze_html(target, real_html,
+                               {"source_type": "url", "note": "post-gate-solve"},
+                               max_depth=getattr(args, "max_depth", 8),
+                               resolve_chain=True,
+                               rpc_override=getattr(args, "rpc_url", None),
+                               rpc_timeout=getattr(args, "rpc_timeout", DEFAULT_RPC_TIMEOUT))
+            page_report["page"]["post_gate"] = sub.get("page")
+            page_report["groups"] = sub.get("groups") or page_report.get("groups")
+            for k in ("verdict", "schemes_seen", "resolved_next_stage_urls",
+                      "actors_attributed"):
+                if sub.get("summary", {}).get(k) is not None:
+                    summ[k] = sub["summary"][k]
+            rec["method"] = "solve"
+            summ["gate_recovery"] = rec
+            return page_report
+    except Exception as e:
+        rec.setdefault("solve", {})["error"] = f"{type(e).__name__}: {e}"
+    # (2) urlscan.io fallback (reliable lightweight path)
+    try:
+        us = urlscan_recover_gated(host, timeout=max(20, getattr(args, "fetch_timeout", 20)))
+        if us:
+            resolved = []
+            for caddr in (us.get("contracts") or [])[:5]:
+                rr = _quick_resolve_contract(caddr,
+                        rpc_timeout=getattr(args, "rpc_timeout", DEFAULT_RPC_TIMEOUT))
+                if rr:
+                    resolved.append(rr)
+            if resolved:
+                us["resolved_contracts"] = resolved
+                summ["resolved_next_stage_urls"] = sorted(
+                    {r["decoded_url"] for r in resolved})
+            rec["urlscan"] = us
+            rec["method"] = "urlscan"
+    except Exception as e:
+        rec.setdefault("urlscan", {})["error"] = f"{type(e).__name__}: {e}"
+    summ["gate_recovery"] = rec
+    page_report["summary"] = summ
+    return page_report
+
+
 def analyze_html(label: str, html: str, source_meta: dict, *, max_depth: int = 8,
                  outdir: str | None = None, resolve_chain: bool = False,
                  rpc_override: str | None = None, rpc_timeout: int = DEFAULT_RPC_TIMEOUT,
@@ -9407,7 +9906,17 @@ def analyze_html(label: str, html: str, source_meta: dict, *, max_depth: int = 8
     elif "etherhiding" in schemes_seen: verdict = "etherhiding_loader"
     elif "tds_beacon" in schemes_seen:  verdict = "tds_beacon_only"
     elif schemes_seen:                  verdict = "scaffolding_only"
-    else:                               verdict = "nothing_recovered"
+    else:
+        # No loader recovered statically. Before giving up, check whether the
+        # page is an anti-bot interstitial (Imunify360 WebShield et al.) hiding
+        # the real loader — surface it as a gate (+ next-stage IOC) instead of
+        # a silent "nothing_recovered".
+        _gate = detect_antibot_gate(html, (source_meta or {}).get("headers"))
+        if _gate:
+            verdict = "gated_antibot"
+            report["page"]["antibot_gate"] = _gate
+        else:
+            verdict = "nothing_recovered"
 
     summary_block = {
         "obfuscated_blocks":         len(obf),
@@ -10293,6 +10802,28 @@ def _render_verdict_block(summ: dict, p):
         p("  VERDICT: loader scaffolding recovered, no payload "
           "(check recovered .js files; class may be unknown).\n")
     elif v == "no_input": p("  VERDICT: no input (empty html).\n")
+    elif v == "gated_antibot":
+        gr = summ.get("gate_recovery") or {}
+        g = gr.get("gate") or {}
+        p(f"  VERDICT: ANTI-BOT GATE ({g.get('kind', 'interstitial')}) — the real loader "
+          f"is behind a WAF challenge.\n")
+        if g.get("next_stage_path"):
+            p(f"           next stage: {g['next_stage_path']}  "
+              f"(wsidchk={g.get('wsidchk')})\n")
+        us = gr.get("urlscan")
+        if us:
+            if us.get("resolved_contracts"):
+                p("           [urlscan fallback] recovered + resolved on-chain:\n")
+                for rc in us["resolved_contracts"]:
+                    p(f"             contract {rc['contract']} {rc['selector']} -> {rc['decoded_url']}\n")
+            else:
+                if us.get("contracts"): p(f"           [urlscan] contracts: {', '.join(us['contracts'])}\n")
+                if us.get("panels"):    p(f"           [urlscan] panels: {', '.join(us['panels'][:8])}\n")
+        elif gr.get("method") == "solve" and gr.get("solve", {}).get("passed"):
+            p("           [solved] WebShield challenge passed; real loader analyzed above.\n")
+        else:
+            p("           (best-effort solve greylisted; no urlscan scan available — "
+              "next-stage path captured as IOC.)\n")
     else: p("  VERDICT: nothing recovered.\n")
     # S32 ClickFix classification — always rendered when present
     _render_clickfix_classification(summ.get("clickfix_classification"), p)
@@ -13026,6 +13557,11 @@ def main():
                                           resolve_chain=args.resolve,
                                           rpc_override=args.rpc_url,
                                           rpc_timeout=args.rpc_timeout)
+                    # Anti-bot gate recovery (solve + urlscan fallback). Network
+                    # work, so only with --resolve. Detection itself already
+                    # ran in analyze_html and is surfaced regardless.
+                    if args.resolve and (report.get("summary") or {}).get("verdict") == "gated_antibot":
+                        _apply_gate_recovery(report, label, args)
                 if args.format == "json":      render_json(report, jsonl=False)
                 elif args.format == "jsonl":   render_json(report, jsonl=True)
                 else:                          render_text(report, quiet=args.quiet)
