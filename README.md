@@ -226,3 +226,25 @@ ClickChain does **not** execute JavaScript, detonate payloads, write to the chai
 ## Acknowledgments
 
 CTI baseline informed by public research from LevelBlue, Trinity Cyber, Sekoia, Censys, Mandiant, Ctrl-Alt-Int3l, Menlo Security, Unit 42, and the abuse.ch family (URLhaus / MalwareBazaar / ThreatFox). Selectors resolved via `4byte.directory`.
+
+
+## Session 40-53 analysis helpers (added since this README was last regenerated)
+One-off, evidence-generating scripts (NOT part of the tool). Each writes artifacts under
+`analysis/session43/_s*.json|.log` (or the sweep dir) and is reusable. Grouped by session:
+
+- **S40** (`_s40_captures/_correlate/_onchain_xref/_profile.py`) - 5-29 panel-census correlation + on-chain xref.
+- **S42** (`_s42_consolidate_panels.py`) - rebuilt panels.txt 179->189 (disciplined union).
+- **S43** (`_s43_census/_deanon_validate/_vt.py`) - 6-01 census, CF de-anon validation, VT lookups.
+- **S44** (`_s44_deanon_rigor/_fleet_demo/_full_topology/_newleads/_shodan_origins.py`) - fleet topology + de-anon rigor.
+- **S45/S46** (`_s45_deepdive.py`, `_s46_openhunt/_port888.py`) - 7th-box de-anon + open-panel/:888 hunt.
+- **S47/S48** (`_s47_adminhunt.py`, `_s48_build_tracker.py`) - open-admin hunt + composer.lock v-next build tracker.
+- **S49** (`_s49_verify_surfaces.py`, `_s49_build_scan_targets.py`) - live-verify open-admin list + build CF/origin scan-target splits.
+- **S50** (`_s50_parse_nmap.py`, `_s50_safe_fingerprint.py`) - parse Blake's nmap output + SAFE per-IP fingerprint (subprocess-isolated TLS, cryptography cert parse).
+- **S51** (`_s51_onchain_refresh.py`, `_s51_build_sweep.py`) - enumerate 9 deployer wallets + re-triage; ADD-only sweep_merged rebuild.
+- **S52** (`_s52_sweep_analysis.py`, `_s52_jsonl_extract.py`) - full-sweep CSV landscape + 399MB JSONL dedup extraction (the trust-nothing ground-truth).
+- **S53** (`_s53_new_contracts_attrib` [inline], `_s53_findings_append.py`, `_s53_fix_readme.py`) - 22-new-contract on-chain attribution + doc maintenance.
+
+Env gotchas for these helpers: VT keys = `vt_apikey1`/`vt_apikey2` (two, rotate); POLYGONSCAN line is
+`KEY = val` (spaces); Etherscan-v2 multichain `chainid=137` for Polygon; `grep -F` on panels.txt/clickchain.py
+core-dumps on Windows bash (UTF-8) -> use the Grep tool or Python; concurrent TLS segfaults Win-Python
+-> subprocess-isolate or serialize.
